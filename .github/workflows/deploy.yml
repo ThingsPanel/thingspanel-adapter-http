@@ -50,17 +50,15 @@ jobs:
           if [ -n "${DEPLOY_SSH_KEY_B64:-}" ]; then
             # Secrets can sometimes pick up whitespace/newlines; sanitize before decoding.
             b64_clean="$(printf "%s" "$DEPLOY_SSH_KEY_B64" | tr -d '\r\n ' )"
-            set +e
-            printf "%s" "$b64_clean" | base64 -d > ~/.ssh/id_ed25519
-            rc=$?
-            set -e
-            if [ "$rc" -ne 0 ]; then
-              echo "DEPLOY_SSH_KEY_B64 decode failed; falling back to DEPLOY_SSH_KEY" >&2
-              printf "%s" "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+
+            # Decode (fail hard with a clear message; avoids silently using a broken fallback)
+            if ! printf "%s" "$b64_clean" | base64 --decode > ~/.ssh/id_ed25519; then
+              echo "ERROR: DEPLOY_SSH_KEY_B64 is not valid base64. Recreate it with: base64 -w0 /root/.ssh/<your_keyfile>" >&2
+              exit 1
             fi
           else
-            # Fallback to raw multi-line key secret
-            printf "%s" "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+            echo "ERROR: DEPLOY_SSH_KEY_B64 secret is empty/missing" >&2
+            exit 1
           fi
 
           chmod 600 ~/.ssh/id_ed25519
