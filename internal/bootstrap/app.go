@@ -120,23 +120,22 @@ func StartApp(configPath string) (*AppContext, error) {
 
 // initializeProtocol 初始化单协议处理器
 func initializeProtocol(app *AppContext, cfg *config.Config) error {
-	// 创建协议处理器（示例：使用传感器协议）
-	// TODO: 根据你的协议替换这里的实现
-	protocolHandler := examples.NewSensorProtocolHandler(cfg.Server.Port)
+	// Create HTTP Demo Handler
+	protocolHandler := examples.NewHTTPDemoHandler(cfg.Server.Port)
 
-	// 创建单协议处理器
+	// Create Single Protocol Handler
 	singleHandler := protocol.NewSingleProtocolHandler(
 		protocolHandler,
 		app.PlatformClient,
 		logrus.StandardLogger(),
 	)
 
-	// 启动协议
+	// Start Protocol
 	if err := singleHandler.Start(); err != nil {
 		return err
 	}
 
 	app.ProtocolHandler = singleHandler
-	logrus.Infof("单协议处理器初始化完成 - %s (v%s)", protocolHandler.Name(), protocolHandler.Version())
+	logrus.Infof("Protocol Handler Initialized - %s (v%s)", protocolHandler.Name(), protocolHandler.Version())
 	return nil
 }

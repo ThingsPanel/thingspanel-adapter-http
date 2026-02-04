@@ -1,30 +1,29 @@
 # configs/config.yaml
 server:
-  port: 15001
-  http_port: 15002
-  heartbeatTimeout: 60 # 心跳超时时间(秒)
+  port: 8080
+  http_port: 8081 # Management port
+  heartbeatTimeout: 60
 
 platform:
   url: "http://47.104.235.67:19999"
   mqtt_broker: "mqtt://47.104.235.67:11883"
   mqtt_username: "root"
   mqtt_password: "root"
-  service_identifier: "OG-SZ501"  # 服务标识符
-  template_secret: "e43823f2-7a91-133b-13d1-612df60fbfdc"  # 模板密钥，用于动态注册
+  service_identifier: "HTTP-DEMO"
+  template_secret: "e43823f2-7a91-133b-13d1-612df60fbfdc"
 
 log:
   level: "debug"
   filePath: "logs/app.log"
-  enableFile: false  # 是否将日志输出到文件
+  enableFile: false
   maxSize: 100
   maxBackups: 3
   maxAge: 28
-  compress: true # 是否压缩日志文件
+  compress: true
   
-  # 设备独立日志配置
   device_log:
-    enabled: true                    # 是否启用设备独立日志
-    base_dir: "logs/devices"         # 设备日志基础目录
-    max_size: 10                     # 单个设备日志文件最大大小(MB)
-    max_age: 30                      # 设备日志文件保留天数
-    compress: true                   # 是否压缩设备日志文件
+    enabled: true
+    base_dir: "logs/devices"
+    max_size: 10
+    max_age: 30
+    compress: true

@@ -2,7 +2,16 @@ package protocol
 
 import (
 	"time"
+
+	"github.com/ThingsPanel/tp-protocol-sdk-go/types"
 )
+
+// PlatformInterface 平台接口，避免循环依赖
+type PlatformInterface interface {
+	SendTelemetry(deviceID string, values map[string]interface{}) error
+	SendDeviceStatus(deviceID string, status int) error
+	GetDevice(deviceNumber string) (*types.Device, error)
+}
 
 // Message 设备消息结构
 type Message struct {
