@@ -56,11 +56,11 @@ jobs:
             set -e
             if [ "$rc" -ne 0 ]; then
               echo "DEPLOY_SSH_KEY_B64 decode failed; falling back to DEPLOY_SSH_KEY" >&2
-              printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+              printf "%s" "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
             fi
           else
             # Fallback to raw multi-line key secret
-            printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+            printf "%s" "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           fi
 
           chmod 600 ~/.ssh/id_ed25519
