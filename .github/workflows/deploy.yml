@@ -34,27 +34,42 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/thingspanel-adapter-http ./cmd
           ./dist/thingspanel-adapter-http --help >/dev/null 2>&1 || true
 
-      - name: Upload binary to /tmp
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          source: "dist/thingspanel-adapter-http"
-          target: "/tmp/thingspanel-adapter-http"
-          strip_components: 1
-          overwrite: true
+      - name: Prepare SSH key
+        env:
+          DEPLOY_SSH_KEY_B64: ${{ secrets.DEPLOY_SSH_KEY_B64 }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -n "${DEPLOY_SSH_KEY_B64:-}" ]; then
+            echo "$DEPLOY_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          else
+            # Fallback to raw multi-line key secret
+            printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          fi
+
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Upload binary to /tmp (scp)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          ssh -p "$DEPLOY_PORT" -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /tmp/thingspanel-adapter-http"
+          scp -P "$DEPLOY_PORT" -o StrictHostKeyChecking=no dist/thingspanel-adapter-http "$DEPLOY_USER@$DEPLOY_HOST:/tmp/thingspanel-adapter-http/thingspanel-adapter-http"
 
       - name: Ensure service + restart (sudo)
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script: |
-            set -e
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          ssh -p "$DEPLOY_PORT" -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" 'set -e
             sudo install -d /opt/thingspanel/bin
             sudo install -m 0755 /tmp/thingspanel-adapter-http/thingspanel-adapter-http /opt/thingspanel/bin/thingspanel-adapter-http
 
@@ -62,7 +77,7 @@ jobs:
             sudo install -d /opt/thingspanel/thingspanel-adapter-http
 
             if [ ! -f /etc/systemd/system/thingspanel-adapter-http.service ]; then
-              sudo tee /etc/systemd/system/thingspanel-adapter-http.service >/dev/null <<'EOF'
+              sudo tee /etc/systemd/system/thingspanel-adapter-http.service >/dev/null <<"EOF"
             [Unit]
             Description=ThingsPanel Adapter HTTP
             After=network-online.target
@@ -86,13 +101,9 @@ jobs:
             sudo systemctl restart thingspanel-adapter-http
             sudo systemctl --no-pager -l status thingspanel-adapter-http || true
             sudo journalctl -u thingspanel-adapter-http --no-pager -n 200 || true
+          '
 
       # Collect remote logs into a downloadable artifact so you don't have to copy/paste.
-      - name: Setup SSH agent
-        if: ${{ always() }}
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
       - name: Collect remote logs
         if: ${{ always() }}
