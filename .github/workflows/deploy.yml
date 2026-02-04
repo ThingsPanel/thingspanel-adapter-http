@@ -97,23 +97,24 @@ jobs:
             fi
 
             if [ ! -f /etc/systemd/system/thingspanel-adapter-http.service ]; then
-              sudo tee /etc/systemd/system/thingspanel-adapter-http.service >/dev/null <<'EOF'
-[Unit]
-Description=ThingsPanel Adapter HTTP
-After=network-online.target
-Wants=network-online.target
+              printf '%s\n' \
+                '[Unit]' \
+                'Description=ThingsPanel Adapter HTTP' \
+                'After=network-online.target' \
+                'Wants=network-online.target' \
+                '' \
+                '[Service]' \
+                'Type=simple' \
+                'WorkingDirectory=/opt/thingspanel/thingspanel-adapter-http' \
+                'ExecStart=/opt/thingspanel/bin/thingspanel-adapter-http --config /opt/thingspanel/thingspanel-adapter-http/configs/config.yaml' \
+                'Restart=always' \
+                'RestartSec=3' \
+                'LimitNOFILE=65535' \
+                '' \
+                '[Install]' \
+                'WantedBy=multi-user.target' \
+              | sudo tee /etc/systemd/system/thingspanel-adapter-http.service >/dev/null
 
-[Service]
-Type=simple
-WorkingDirectory=/opt/thingspanel/thingspanel-adapter-http
-ExecStart=/opt/thingspanel/bin/thingspanel-adapter-http --config /opt/thingspanel/thingspanel-adapter-http/configs/config.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF
               sudo systemctl daemon-reload
               sudo systemctl enable thingspanel-adapter-http
             fi
