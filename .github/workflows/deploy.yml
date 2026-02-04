@@ -40,8 +40,12 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           set -euo pipefail
+          umask 077
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
+
+          # Create file with safe permissions first (prevents OpenSSH "bad permissions")
+          install -m 600 /dev/null ~/.ssh/id_ed25519
 
           if [ -n "${DEPLOY_SSH_KEY_B64:-}" ]; then
             echo "$DEPLOY_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
@@ -51,6 +55,7 @@ jobs:
           fi
 
           chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -lf ~/.ssh/id_ed25519 >/dev/null
 
       - name: Upload binary + default config to /tmp (scp)
         env:
