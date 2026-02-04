@@ -48,7 +48,16 @@ jobs:
           install -m 600 /dev/null ~/.ssh/id_ed25519
 
           if [ -n "${DEPLOY_SSH_KEY_B64:-}" ]; then
-            echo "$DEPLOY_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+            # Secrets can sometimes pick up whitespace/newlines; sanitize before decoding.
+            b64_clean="$(printf "%s" "$DEPLOY_SSH_KEY_B64" | tr -d '\r\n ' )"
+            set +e
+            printf "%s" "$b64_clean" | base64 -d > ~/.ssh/id_ed25519
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "DEPLOY_SSH_KEY_B64 decode failed; falling back to DEPLOY_SSH_KEY" >&2
+              printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+            fi
           else
             # Fallback to raw multi-line key secret
             printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
