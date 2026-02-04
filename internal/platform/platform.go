@@ -63,8 +63,14 @@ type Config struct {
 
 // NewPlatformClient 创建平台客户端
 func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, error) {
+	// Normalize BaseURL: tp-protocol-sdk expects a full URL with scheme.
+	baseURL := strings.TrimSpace(config.BaseURL)
+	if baseURL != "" && !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "http://" + baseURL
+	}
+
 	sdkConfig := client.ClientConfig{
-		BaseURL:      config.BaseURL,
+		BaseURL:      baseURL,
 		MQTTBroker:   config.MQTTBroker,
 		MQTTUsername: config.MQTTUsername,
 		MQTTPassword: config.MQTTPassword,
