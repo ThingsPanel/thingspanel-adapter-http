@@ -1,0 +1,87 @@
+name: Deploy to server
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-thingspanel-adapter-http
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: |
+          set -e
+          go mod tidy
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/thingspanel-adapter-http ./cmd
+          ./dist/thingspanel-adapter-http --help >/dev/null 2>&1 || true
+
+      - name: Upload binary
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: "dist/thingspanel-adapter-http"
+          target: "/opt/thingspanel/bin"
+          strip_components: 1
+
+      - name: Ensure service + restart
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            install -d /opt/thingspanel/bin
+            chmod +x /opt/thingspanel/bin/thingspanel-adapter-http
+
+            # Ensure repo directory exists (for configs/logs). We do NOT overwrite configs here.
+            install -d /opt/thingspanel/thingspanel-adapter-http
+
+            if [ ! -f /etc/systemd/system/thingspanel-adapter-http.service ]; then
+              cat >/etc/systemd/system/thingspanel-adapter-http.service <<'EOF'
+            [Unit]
+            Description=ThingsPanel Adapter HTTP
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/thingspanel/thingspanel-adapter-http
+            ExecStart=/opt/thingspanel/bin/thingspanel-adapter-http --config /opt/thingspanel/thingspanel-adapter-http/configs/config.yaml
+            Restart=always
+            RestartSec=3
+            LimitNOFILE=65535
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+              systemctl daemon-reload
+              systemctl enable thingspanel-adapter-http
+            fi
+
+            systemctl restart thingspanel-adapter-http
+            systemctl --no-pager -l status thingspanel-adapter-http || true
+            journalctl -u thingspanel-adapter-http --no-pager -n 120 || true
