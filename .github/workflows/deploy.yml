@@ -52,7 +52,7 @@ jobs:
 
           chmod 600 ~/.ssh/id_ed25519
 
-      - name: Upload binary to /tmp (scp)
+      - name: Upload binary + default config to /tmp (scp)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -61,6 +61,8 @@ jobs:
           set -euo pipefail
           ssh -p "$DEPLOY_PORT" -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /tmp/thingspanel-adapter-http"
           scp -P "$DEPLOY_PORT" -o StrictHostKeyChecking=no dist/thingspanel-adapter-http "$DEPLOY_USER@$DEPLOY_HOST:/tmp/thingspanel-adapter-http/thingspanel-adapter-http"
+          # Upload default config from repo (will only be installed on server if missing)
+          scp -P "$DEPLOY_PORT" -o StrictHostKeyChecking=no configs/config.yaml "$DEPLOY_USER@$DEPLOY_HOST:/tmp/thingspanel-adapter-http/config.yaml"
 
       - name: Ensure service + restart (sudo)
         env:
@@ -75,6 +77,12 @@ jobs:
 
             # Ensure runtime directory exists (for configs/logs). We do NOT overwrite configs here.
             sudo install -d /opt/thingspanel/thingspanel-adapter-http
+            sudo install -d /opt/thingspanel/thingspanel-adapter-http/configs
+
+            # Install default config on first deploy only (do not overwrite user config)
+            if [ ! -f /opt/thingspanel/thingspanel-adapter-http/configs/config.yaml ]; then
+              sudo install -m 0644 /tmp/thingspanel-adapter-http/config.yaml /opt/thingspanel/thingspanel-adapter-http/configs/config.yaml
+            fi
 
             if [ ! -f /etc/systemd/system/thingspanel-adapter-http.service ]; then
               sudo tee /etc/systemd/system/thingspanel-adapter-http.service >/dev/null <<"EOF"
