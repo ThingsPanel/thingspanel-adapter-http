@@ -128,6 +128,7 @@ func initializeProtocol(app *AppContext, cfg *config.Config) error {
 		protocolHandler,
 		app.PlatformClient,
 		logrus.StandardLogger(),
+		cfg.Server.AutoRegister,
 	)
 
 	// Start Protocol

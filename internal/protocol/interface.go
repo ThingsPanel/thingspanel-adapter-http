@@ -11,6 +11,7 @@ type PlatformInterface interface {
 	SendTelemetry(deviceID string, values map[string]interface{}) error
 	SendDeviceStatus(deviceID string, status int) error
 	GetDevice(deviceNumber string) (*types.Device, error)
+	DynamicRegister(deviceNumber string) (*types.DeviceDynamicAuthData, error)
 }
 
 // Message 设备消息结构

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,20 +14,62 @@ import (
 
 // HTTPHandler HTTP Server Handler
 type HTTPHandler struct {
-	port     int
-	handler  ProtocolHandler
-	platform PlatformInterface
-	logger   *logrus.Logger
-	server   *http.Server
+	port         int
+	handler      ProtocolHandler
+	platform     PlatformInterface
+	logger       *logrus.Logger
+	server       *http.Server
+	autoRegister bool
+}
+
+type Response struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data"`
+}
+
+// HandleHealth handles health check
+func (h *HTTPHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// HandleCustomFormConfig handles form config request directly
+func (h *HTTPHandler) HandleCustomFormConfig(w http.ResponseWriter, r *http.Request) {
+	// Simple static config that matches README structure (Array)
+	// We can read from file, or just hardcode for stability if file issues persist.
+	// But let's try to return the Array structure expected.
+
+	config := []map[string]interface{}{
+		{
+			"dataKey":     "temp",
+			"label":       "Temperature(C)",
+			"placeholder": "Input Temp",
+			"type":        "input",
+			"validate": map[string]interface{}{
+				"required": true,
+				"message":  "Required",
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{
+		Code:    200,
+		Message: "success",
+		Data:    config,
+	})
 }
 
 // NewHTTPHandler Create HTTP Handler
-func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger) *HTTPHandler {
+func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool) *HTTPHandler {
 	return &HTTPHandler{
-		port:     port,
-		handler:  handler,
-		platform: platform,
-		logger:   logger,
+		port:         port,
+		handler:      handler,
+		platform:     platform,
+		logger:       logger,
+		autoRegister: autoRegister,
 	}
 }
 
@@ -94,17 +137,38 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	device, err := h.platform.GetDevice(deviceNumber)
 	var deviceID string
 	if err != nil {
-		h.logger.WithError(err).Error("Get device info failed")
-		logger.LogDeviceEvent(deviceNumber, "get_device_failed", map[string]interface{}{
-			"error":         err.Error(),
-			"device_number": deviceNumber,
-			"protocol":      h.handler.Name(),
-		})
-		http.Error(w, "Device not found", http.StatusNotFound)
-		return
+		h.logger.WithError(err).Warnf("Device not found: %s", deviceNumber)
+
+		// Attempt Auto-Register if enabled
+		if h.autoRegister {
+			h.logger.Infof("Attempting auto-register for device: %s", deviceNumber)
+			if _, err := h.platform.DynamicRegister(deviceNumber); err != nil {
+				h.logger.WithError(err).Error("Auto-register failed")
+				http.Error(w, "Device not found and registration failed", http.StatusNotFound)
+				return
+			}
+			h.logger.Infof("Auto-register success for device: %s", deviceNumber)
+
+			// Retry getting device
+			device, err = h.platform.GetDevice(deviceNumber)
+			if err != nil {
+				h.logger.WithError(err).Error("Get device info failed after register")
+				http.Error(w, "Device registered but failed to retrieve info", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Log to unknown device log?
+			logger.LogDeviceEvent(deviceNumber, "get_device_failed", map[string]interface{}{
+				"error":         err.Error(),
+				"device_number": deviceNumber,
+				"protocol":      h.handler.Name(),
+			})
+			http.Error(w, "Device not found", http.StatusNotFound)
+			return
+		}
 	}
 	deviceID = device.ID
-	
+
 	// Log received data
 	logger.LogDeviceData(deviceNumber, "received", body, map[string]interface{}{
 		"remote_addr": r.RemoteAddr,

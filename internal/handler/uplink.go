@@ -55,21 +55,59 @@ func (h *HTTPHandler) HandleUplink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var req UplinkRequest
+	var raw map[string]interface{}
 	dec := json.NewDecoder(r.Body)
 	dec.UseNumber()
-	if err := dec.Decode(&req); err != nil {
+	if err := dec.Decode(&raw); err != nil {
 		h.logger.WithError(err).Warn("uplink: invalid json")
 		h.writeJSON(w, http.StatusBadRequest, UplinkResponse{Code: 400, Message: "invalid json"})
 		return
 	}
-	if req.DeviceNumber == "" {
+	h.logger.Infof("DEBUG: Raw JSON: %+v", raw)
+
+	deviceNumber, ok := raw["device_number"].(string)
+	if !ok || deviceNumber == "" {
 		h.writeJSON(w, http.StatusBadRequest, UplinkResponse{Code: 400, Message: "device_number required"})
 		return
 	}
-	if req.Values == nil {
+
+	// Extract values (all fields except device_number and ts)
+	values := make(map[string]interface{})
+	var ts int64
+
+	// Check if "values" key exists and is a map (Nested format support)
+	if v, ok := raw["values"].(map[string]interface{}); ok {
+		values = v
+	} else {
+		// Flat format support
+		for k, v := range raw {
+			if k == "device_number" {
+				continue
+			}
+			if k == "ts" {
+				if t, ok := v.(json.Number); ok {
+					if val, err := t.Int64(); err == nil {
+						ts = val
+						continue
+					}
+				} else if t, ok := v.(float64); ok {
+					ts = int64(t)
+					continue
+				}
+			}
+			values[k] = v
+		}
+	}
+
+	if len(values) == 0 {
 		h.writeJSON(w, http.StatusBadRequest, UplinkResponse{Code: 400, Message: "values required"})
 		return
+	}
+
+	req := UplinkRequest{
+		DeviceNumber: deviceNumber,
+		TS:           ts,
+		Values:       values,
 	}
 
 	device, err := h.platform.GetDevice(req.DeviceNumber)
@@ -97,14 +135,15 @@ func (h *HTTPHandler) HandleUplink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ts := time.Now().Unix()
-	if req.TS > 0 {
-		ts = req.TS
+	// Use TS from request or current time
+	finalTS := req.TS
+	if finalTS == 0 {
+		finalTS = time.Now().Unix()
 	}
 	h.logger.WithFields(logrus.Fields{
 		"device_number": req.DeviceNumber,
 		"device_id":     device.ID,
-		"ts":            ts,
+		"ts":            finalTS,
 		"keys":          len(req.Values),
 	}).Info("uplink ok")
 

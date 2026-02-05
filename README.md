@@ -56,6 +56,23 @@
 1. 修改 `configs/config.yaml` 中的配置以匹配您的环境
 2. 根据需要实现自定义协议处理逻辑
 3. 如果仅需要控制台日志而不想生成日志文件，可将 `enableFile` 设置为 `false`
+## 重要提示 (Important)
+
+### Docker 部署网络配置
+如果您的 ThingsPanel 平台运行在 Docker 容器中，而插件运行在宿主机上，请在平台配置插件时注意以下事项：
+
+1. **HTTP 服务地址 (Service Address)**:
+   - 请使用 Docker 网关地址，通常为: `http://172.17.0.1:8081`
+   - **不要**使用 `127.0.0.1` 或 `localhost` (这会指向容器内部)
+
+2. **设备接入地址 (Access Address)**:
+   - 设备上报数据时，请使用服务器的**公网IP**或**局域网IP**。
+   - 例如: `http://10.147.17.226:8081/api/v1/uplink`
+
+3. **表单配置说明 (Form Config)**:
+   - **协议配置 (Protocol Config)**: 本插件无需额外的全局协议配置，该页面为空是正常的。
+   - **连接信息 (Connection)**: 请在此页面输入设备的 **Access Token** 以进行鉴权。
+
 
 ## 目录结构
 

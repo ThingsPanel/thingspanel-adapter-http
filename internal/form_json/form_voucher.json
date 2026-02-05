@@ -1,22 +1,11 @@
 [
     {
-        "dataKey": "username",
-        "label": "MQTT Username",
-        "placeholder": "please input the MQTT Username",
+        "dataKey": "accessToken",
+        "label": "Access Token",
+        "placeholder": "Please input Access Token",
         "type": "input",
         "validate": {
-            "message": "The MQTT Username cannot be empty",
-            "required": true,
-            "type": "string"
-        }
-    },
-    {
-        "dataKey": "password",
-        "label": "MQTT Password",
-        "placeholder": "please input the MQTT Password",
-        "type": "input",
-        "validate": {
-            "message": "The MQTT Password cannot be empty",
+            "message": "Access Token cannot be empty",
             "required": true,
             "type": "string"
         }

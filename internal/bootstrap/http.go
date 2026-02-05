@@ -10,6 +10,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type APIResponse struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data"`
+}
+
 // StartHTTPServer 启动HTTP服务
 func StartHTTPServer(platformClient *platform.PlatformClient, httpPort int, httpAPIKey string, autoRegister bool) error {
 	// ThingsPanel callbacks handler
@@ -17,13 +23,27 @@ func StartHTTPServer(platformClient *platform.PlatformClient, httpPort int, http
 	tpHandlers := httpHandler.RegisterHandlers()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", httpHandler.HandleHealthz)
+
+	// Local Handlers
+	handleHealth := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+
+	// Custom Intercepts (Bypass SDK for these paths)
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/healthz", handleHealth)
+
+	// Uplink
 	mux.HandleFunc("/api/v1/uplink", httpHandler.HandleUplink)
+
+	// SDK Fallback
 	mux.Handle("/", tpHandlers)
 
 	go func() {
 		addr := fmt.Sprintf(":%d", httpPort)
-		logrus.Infof("启动HTTP服务 [%s]", addr)
+		logrus.Infof("启动HTTP服务 [%s] (WITH HEALTH ALIAS)", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			logrus.Errorf("HTTP服务启动失败: %v", err)
 		}

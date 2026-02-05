@@ -1,2 +1,8 @@
 *.log
 logs/
+tp-plugin
+tp-plugin-linux
+*.exp
+.vscode/
+.idea/
+bin/

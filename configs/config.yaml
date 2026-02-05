@@ -1,6 +1,6 @@
 # configs/config.yaml
 server:
-  port: 8080
+  port: 19090 # Changed from 8080 to avoid Nginx conflict
   http_port: 8081 # HTTP port (ThingsPanel callbacks + device uplink)
   heartbeatTimeout: 60
 
@@ -11,17 +11,19 @@ server:
   auto_register: true
 
 platform:
-  url: "http://47.104.235.67:19999"
-  mqtt_broker: "mqtt://47.104.235.67:11883"
+  url: "http://127.0.0.1:9999"      # Changed to localhost
+  mqtt_broker: "tcp://127.0.0.1:1883" # Changed to localhost, tcp scheme
   mqtt_username: "root"
   mqtt_password: "root"
   service_identifier: "HTTP-DEMO"
-  template_secret: "e43823f2-7a91-133b-13d1-612df60fbfdc"
+  
+  # Using Template ID provided by user as the secret
+  template_secret: "749fc9a7-643e-c48c-e52b-ea129444de3a"
 
 log:
   level: "debug"
   filePath: "logs/app.log"
-  enableFile: false
+  enableFile: true # Enable file log to debug better
   maxSize: 100
   maxBackups: 3
   maxAge: 28
