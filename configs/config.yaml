@@ -1,7 +1,7 @@
 # configs/config.yaml
 server:
   port: 19090 # Changed from 8080 to avoid Nginx conflict
-  http_port: 8081 # HTTP port (ThingsPanel callbacks + device uplink)
+  http_port: 19091 # HTTP port (ThingsPanel callbacks + device uplink)
   heartbeatTimeout: 60
 
   # Device uplink HTTP auth (send header: X-Api-Key)
