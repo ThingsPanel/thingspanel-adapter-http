@@ -1,68 +1,70 @@
-# ThingsPanel HTTP 协议插件
+[Checking Chinese version](README_CN.md)
 
-这是一个官方标准的 **HTTP协议接入插件**，用于帮助不支持 MQTT 的设备通过 HTTP POST 请求将数据发送至 ThingsPanel 物联网平台。
+# ThingsPanel HTTP Protocol Plugin
 
-## 功能特性
+This is the official standard **HTTP Protocol Access Plugin**, helping devices that do not support MQTT to send data to the ThingsPanel IoT platform via HTTP POST requests.
 
-- **标准 HTTP 接入**: 提供 RESTful API 接收设备遥测数据。
-- **Token 鉴权**: 支持基于 Access Token 的设备安全认证。
-- **自定义表单**: 
-  - **协议配置**: 无需全局配置 (Empty).
-  - **连接配置**: 提供 Access Token 输入框.
-- **健康检查**: 提供 `/health` 端点供平台监控插件状态.
-- **Docker 兼容**: 针对容器化部署环境进行了优化说明.
+## Features
 
-## 快速开始
+- **Standard HTTP Access**: Provides RESTful API to receive device telemetry data.
+- **Token Authentication**: Supports device security authentication based on Access Token.
+- **Custom Forms**: 
+  - **Protocol Config**: No global configuration required (Empty).
+  - **Connection Config**: Provides Access Token input field.
+- **Health Check**: Provides `/health` endpoint for platform status monitoring.
+- **Docker Compatibility**: Optimized instructions for containerized deployment environments.
 
-### 1. 编译与运行
+## Quick Start
 
-**编译**
+### 1. Build and Run
+
+**Build**
 ```bash
 go mod tidy
 go build -o tp-plugin-http cmd/main.go
 ```
 
-**运行**
-确保 `configs/config.yaml` 存在并配置正确：
+**Run**
+Ensure `configs/config.yaml` exists and is configured correctly:
 ```bash
 ./tp-plugin-http
 ```
 
-### 2. 插件配置 (configs/config.yaml)
+### 2. Plugin Configuration (configs/config.yaml)
 
 ```yaml
 server:
-  http_port: 8081         # 插件监听端口 (设备上报数据端口)
+  http_port: 8081         # Plugin listening port (Device uplink port)
   
 platform:
-  url: "http://127.0.0.1:9999"    # ThingsPanel 平台地址 (注意 Docker 环境需修改)
+  url: "http://127.0.0.1:9999"    # ThingsPanel Platform address (Modify for Docker environments)
   mqtt_broker: "tcp://127.0.0.1:1883"
-  service_identifier: "HTTP" # 服务标识符
+  service_identifier: "HTTP" # Service Identifier
 ```
 
-## 平台接入指南 (重要)
+## Platform Integration Guide (Important)
 
-### 1. Docker 环境网络配置
+### 1. Docker Network Configuration
 
-如果您的 ThingsPanel 平台运行在 Docker 容器中，而本插件运行在宿主机上：
+If your ThingsPanel platform runs in a Docker container, while this plugin runs on the host machine:
 
-- **HTTP 服务地址 (Service Address)**: 
-  - 这是平台调用插件的地址。
-  - 请使用 Docker 网关地址: `http://172.17.0.1:8081`
-  - **切勿**使用 `127.0.0.1`，因为这对容器来说是指向它自己。
+- **HTTP Service Address**: 
+  - This is the address the Platform calls to reach the Plugin.
+  - Please use the Docker Gateway address: `http://172.17.0.1:8081`
+  - **Do NOT** use `127.0.0.1`, as that refers to the container itself.
 
-- **设备接入地址 (Access Address)**:
-  - 这是设备上报数据的地址。
-  - 请使用服务器的 **公网IP** 或 **局域网IP**。
-  - 例如: `http://10.147.17.226:8081/api/v1/uplink`
+- **Access Address**:
+  - This is the address Devices use to report data.
+  - Please use the server's **Public IP** or **LAN IP**.
+  - Example: `http://10.147.17.226:8081/api/v1/uplink`
 
-### 2. 设备上报示例
+### 2. Device Uplink Example
 
-配置好插件和设备后，您可以使用 `curl` 模拟设备上报数据：
+After configuring the plugin and device, you can use `curl` to simulate device data reporting:
 
 ```bash
-# 格式: POST /api/v1/uplink
-# Header: Access-Token: <在平台上配置的Access Token>
+# Format: POST /api/v1/uplink
+# Header: Access-Token: <Access Token configured on the platform>
 
 curl -X POST http://localhost:8081/api/v1/uplink \
   -H "Content-Type: application/json" \
@@ -74,21 +76,21 @@ curl -X POST http://localhost:8081/api/v1/uplink \
       }'
 ```
 
-## 目录结构
+## Directory Structure
 
 ```text
 .
-├── cmd/main.go            # 程序入口
-├── configs/config.yaml    # 配置文件
+├── cmd/main.go            # Program Entry
+├── configs/config.yaml    # Configuration File
 ├── internal/
-│   ├── bootstrap/         # 启动初始化 (HTTP Server定义在此)
-│   ├── handler/           # 业务逻辑 (Uplink处理)
-│   └── form_json/         # 表单定义 (Voucher/Config)
-└── logs/                  # 运行日志
+│   ├── bootstrap/         # Startup Initialization (HTTP Server defined here)
+│   ├── handler/           # Business Logic (Uplink processing)
+│   └── form_json/         # Form Definitions (Voucher/Config)
+└── logs/                  # Runtime Logs
 ```
 
-## 故障排查
+## Troubleshooting
 
-- **插件未启动**: 检查 `http_port` 是否被占用 (`netstat -tulpn | grep 8081`).
-- **数据未上报**: 检查 `app.log` 是否有报错，确认 Access Token 是否匹配.
-- **平台连接失败**: 确保 `config.yaml` 中的 `platform.url` 是宿主机可访问的地址.
+- **Plugin not started**: Check if `http_port` is occupied (`netstat -tulpn | grep 8081`).
+- **Data not reported**: Check `app.log` for errors, confirm if Access Token matches.
+- **Platform Connection Failed**: Ensure `platform.url` in `config.yaml` is accessible from the host.
