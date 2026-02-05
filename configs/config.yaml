@@ -15,8 +15,7 @@ platform:
   mqtt_broker: "tcp://127.0.0.1:1883" # Changed to localhost, tcp scheme
   mqtt_username: "root"
   mqtt_password: "root"
-  service_identifier: "HTTP-DEMO"
-  
+  service_identifier: "HTTP" # 服务标识符 
   # Using Template ID provided by user as the secret
   template_secret: "749fc9a7-643e-c48c-e52b-ea129444de3a"
 

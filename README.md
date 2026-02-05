@@ -37,7 +37,7 @@ server:
 platform:
   url: "http://127.0.0.1:9999"    # ThingsPanel 平台地址 (注意 Docker 环境需修改)
   mqtt_broker: "tcp://127.0.0.1:1883"
-  service_identifier: "HTTP-DEMO" # 服务标识符
+  service_identifier: "HTTP" # 服务标识符
 ```
 
 ## 平台接入指南 (重要)
