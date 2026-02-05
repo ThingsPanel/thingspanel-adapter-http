@@ -1,4 +1,4 @@
-[Back to English version](README.md)
+[English Document](README.md)
 
 # ThingsPanel HTTP 协议插件
 
