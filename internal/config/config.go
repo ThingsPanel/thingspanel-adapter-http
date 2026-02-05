@@ -11,6 +11,12 @@ type ServerConfig struct {
 	Port             int `mapstructure:"port"`
 	HTTPPort         int `mapstructure:"http_port"`
 	HeartbeatTimeout int `mapstructure:"heartbeatTimeout"`
+
+	// Device uplink HTTP auth: header X-Api-Key must match this.
+	HTTPAPIKey string `mapstructure:"http_api_key"`
+
+	// Auto-register by template_secret when device_number not found.
+	AutoRegister bool `mapstructure:"auto_register"`
 }
 
 type PlatformConfig struct {

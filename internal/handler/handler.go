@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 	formjson "tp-plugin/internal/form_json"
 	"tp-plugin/internal/pkg/logger"
 	"tp-plugin/internal/platform"
-
-	"strings"
 
 	"github.com/ThingsPanel/tp-protocol-sdk-go/handler"
 	"github.com/sirupsen/logrus"
@@ -44,10 +42,14 @@ type HTTPHandler struct {
 	platform *platform.PlatformClient
 	logger   *logrus.Logger
 	stdlog   *log.Logger
+
+	// HTTP uplink settings
+	httpAPIKey   string
+	autoRegister bool
 }
 
 // NewHTTPHandler 创建HTTP处理器
-func NewHTTPHandler(platform *platform.PlatformClient, logger *logrus.Logger) *HTTPHandler {
+func NewHTTPHandler(platform *platform.PlatformClient, logger *logrus.Logger, httpAPIKey string, autoRegister bool) *HTTPHandler {
 	// 创建适配器
 	writer := &logrusWriter{
 		logger: logger,
@@ -58,9 +60,11 @@ func NewHTTPHandler(platform *platform.PlatformClient, logger *logrus.Logger) *H
 	stdlog := log.New(writer, "", 0)
 
 	return &HTTPHandler{
-		platform: platform,
-		logger:   logger,
-		stdlog:   stdlog,
+		platform:     platform,
+		logger:       logger,
+		stdlog:       stdlog,
+		httpAPIKey:   httpAPIKey,
+		autoRegister: autoRegister,
 	}
 }
 
@@ -97,35 +101,28 @@ func (h *HTTPHandler) handleGetFormConfig(req *handler.GetFormConfigRequest) (in
 	// 根据请求类型返回不同的配置表单
 	switch req.FormType {
 	case "CFG": // 设备配置表单
-		return nil, nil
+		return h.readFormConfigEmbed("form_config.json"), nil
 	case "VCR": // 设备凭证表单
-		return nil, nil
+		return h.readFormConfigEmbed("form_voucher.json"), nil
 	case "SVCR": // 服务接入点凭证表单
-		return readFormConfigByPath("../internal/form_json/form_service_voucher.json"), nil
+		return h.readFormConfigEmbed("form_service_voucher.json"), nil
 	default:
 		return nil, fmt.Errorf("不支持的表单类型: %s", req.FormType)
 	}
 }
 
-// ./form_config.json
-func readFormConfigByPath(path string) interface{} {
-	filePtr, err := os.Open(path)
+func (h *HTTPHandler) readFormConfigEmbed(name string) interface{} {
+	b, err := formjson.FS.ReadFile(name)
 	if err != nil {
-		logrus.Warn("文件打开失败...", err.Error())
+		h.logger.WithError(err).Warn("read form json failed")
 		return nil
 	}
-	defer filePtr.Close()
 	var info interface{}
-	// 创建json解码器
-	decoder := json.NewDecoder(filePtr)
-	err = decoder.Decode(&info)
-	if err != nil {
-		logrus.Warn("解码失败", err.Error())
-		return info
-	} else {
-		logrus.Info("读取文件[form_config.json]成功...")
-		return info
+	if err := json.Unmarshal(b, &info); err != nil {
+		h.logger.WithError(err).Warn("decode form json failed")
+		return nil
 	}
+	return info
 }
 
 // handleDeviceDisconnect 处理设备断开连接请求

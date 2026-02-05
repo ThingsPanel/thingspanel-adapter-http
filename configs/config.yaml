@@ -1,8 +1,14 @@
 # configs/config.yaml
 server:
   port: 8080
-  http_port: 8081 # Management port
+  http_port: 8081 # HTTP port (ThingsPanel callbacks + device uplink)
   heartbeatTimeout: 60
+
+  # Device uplink HTTP auth (send header: X-Api-Key)
+  http_api_key: "CHANGE_ME"
+
+  # Auto-register device when device_number not found
+  auto_register: true
 
 platform:
   url: "http://47.104.235.67:19999"
