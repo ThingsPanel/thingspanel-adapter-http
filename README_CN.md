@@ -66,10 +66,11 @@ platform:
 # 格式: POST /api/v1/uplink
 # Header: Access-Token: <在平台上配置的Access Token>
 
-curl -X POST http://localhost:8081/api/v1/uplink \
+curl -X POST http://47.115.210.16:19090/api/v1/uplink \
   -H "Content-Type: application/json" \
-  -H "Access-Token: YOUR_DEVICE_TOKEN" \
+  -H "Access-Token: 111111222222" \
   -d '{
+        "device_number": "123456789123",
         "temp": 25.5,
         "hum": 60.2,
         "status": "active"

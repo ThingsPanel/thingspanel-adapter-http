@@ -11,7 +11,7 @@ RUN apk add --no-cache git
 
 # 设置 Go 环境变量
 ENV GO111MODULE=on
-ENV GOPROXY="https://goproxy.io"
+ENV GOPROXY="https://goproxy.cn,direct"
 
 # 首先只复制依赖文件
 COPY go.mod go.sum ./
