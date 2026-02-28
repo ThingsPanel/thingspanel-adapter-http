@@ -23,7 +23,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN go build -o tp-plugin ./cmd/main.go
+RUN go build -o tp-plugin-http ./cmd/main.go
 
 # 使用 alpine 作为运行时镜像
 FROM alpine:latest
@@ -41,22 +41,22 @@ WORKDIR /app
 RUN mkdir -p /app/config
 
 # 从构建阶段复制二进制文件和配置文件
-COPY --from=builder /build/tp-plugin .
+COPY --from=builder /build/tp-plugin-http .
 COPY --from=builder /build/configs/config.yaml /app/config/
 
 # 设置默认环境变量
-ENV P_SERVER_PORT=15001 \
-    P_SERVER_HTTP_PORT=15002 \
+ENV P_SERVER_PORT=19090 \
+    P_SERVER_HTTP_PORT=19091 \
     P_PLATFORM_URL=http://127.0.0.1:9999 \
     P_PLATFORM_MQTT_BROKER=127.0.0.1:1883 \
     P_PLATFORM_MQTT_QOS=0 \
     P_LOG_LEVEL=info
 
 # 暴露端口
-EXPOSE 15001 15002
+EXPOSE 19090 19091
 
 # 设置可执行权限
-RUN chmod +x tp-plugin
+RUN chmod +x tp-plugin-http
 
 # 启动应用
-ENTRYPOINT [ "./tp-plugin", "-c", "/app/config/config.yaml" ]
+ENTRYPOINT [ "./tp-plugin-http", "-c", "/app/config/config.yaml" ]
