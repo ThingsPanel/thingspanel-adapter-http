@@ -28,7 +28,7 @@ type CommandProcessorInterface interface {
 
 // ControlProcessorInterface 控制处理器接口
 type ControlProcessorInterface interface {
-	ProcessControl(deviceID string, controlData map[string]interface{}) error
+	ProcessControl(deviceNumber string, controlData map[string]interface{}) error
 }
 
 // CommandMessage 指令消息结构
@@ -43,6 +43,7 @@ type PlatformClient struct {
 	logger           *logrus.Logger
 	deviceCache      map[string]*types.Device // key为deviceNumber
 	deviceIDCache    map[string]*types.Device // key为deviceID
+	deviceAddrCache  map[string]string        // key为deviceNumber, value为最近一次上报IP
 	cacheMutex       sync.RWMutex
 	Config           Config
 	commandProcessor CommandProcessorInterface
@@ -90,11 +91,12 @@ func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, e
 	}
 
 	return &PlatformClient{
-		Config:        config,
-		sdkClient:     sdkClient,
-		logger:        logger,
-		deviceCache:   make(map[string]*types.Device), // key为deviceNumber
-		deviceIDCache: make(map[string]*types.Device), // key为deviceID
+		Config:          config,
+		sdkClient:       sdkClient,
+		logger:          logger,
+		deviceCache:     make(map[string]*types.Device), // key为deviceNumber
+		deviceIDCache:   make(map[string]*types.Device), // key为deviceID
+		deviceAddrCache: make(map[string]string),
 	}, nil
 }
 
@@ -226,8 +228,34 @@ func (p *PlatformClient) ClearDeviceCache(deviceNumber string) {
 		delete(p.deviceIDCache, device.ID)
 	}
 	delete(p.deviceCache, deviceNumber)
+	delete(p.deviceAddrCache, deviceNumber)
 	p.cacheMutex.Unlock()
 	p.logger.WithField("device_number", deviceNumber).Debug("设备缓存已清理")
+}
+
+// UpdateDeviceAddress 记录设备最近一次HTTP上报来源地址。
+func (p *PlatformClient) UpdateDeviceAddress(deviceNumber, address string) {
+	address = strings.TrimSpace(address)
+	if deviceNumber == "" || address == "" {
+		return
+	}
+
+	p.cacheMutex.Lock()
+	p.deviceAddrCache[deviceNumber] = address
+	p.cacheMutex.Unlock()
+
+	p.logger.WithFields(logrus.Fields{
+		"device_number": deviceNumber,
+		"address":       address,
+	}).Debug("设备上报地址已更新")
+}
+
+// GetDeviceAddress 获取设备最近一次HTTP上报来源地址。
+func (p *PlatformClient) GetDeviceAddress(deviceNumber string) (string, bool) {
+	p.cacheMutex.RLock()
+	address, ok := p.deviceAddrCache[deviceNumber]
+	p.cacheMutex.RUnlock()
+	return address, ok && address != ""
 }
 
 // GetDeviceByID 通过设备ID查找设备
@@ -327,6 +355,29 @@ func (p *PlatformClient) SendDeviceStatus(deviceID string, status int) error {
 		"status":    statusText,
 	}).Debug("设备状态已发送")
 
+	return nil
+}
+
+// PublishCommandResponse 发布指令响应到平台
+func (p *PlatformClient) PublishCommandResponse(deviceID, messageID string, ok bool, data interface{}) error {
+	payload, err := json.Marshal(map[string]interface{}{
+		"ok":   ok,
+		"data": data,
+	})
+	if err != nil {
+		return fmt.Errorf("序列化指令响应失败: %w", err)
+	}
+
+	topic := fmt.Sprintf("plugin/%s/devices/command_response/%s/%s", p.Config.ServiceIdentifier, deviceID, messageID)
+	if err := p.sdkClient.MQTT().Publish(topic, 1, string(payload)); err != nil {
+		return fmt.Errorf("发布指令响应失败: %w", err)
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"device_id":  deviceID,
+		"message_id": messageID,
+		"topic":      topic,
+	}).Info("指令响应已回传平台")
 	return nil
 }
 
@@ -436,7 +487,7 @@ func (p *PlatformClient) GetControlProcessor() ControlProcessorInterface {
 // startControlSubscription 启动MQTT控制订阅
 func (p *PlatformClient) startControlSubscription() error {
 	// 订阅控制主题
-	controlTopic := "devices/telemetry/control/+"
+	controlTopic := fmt.Sprintf("plugin/%s/devices/telemetry/control/+", p.Config.ServiceIdentifier)
 
 	p.logger.Infof("开始订阅控制主题: %s", controlTopic)
 
@@ -452,15 +503,15 @@ func (p *PlatformClient) startControlSubscription() error {
 func (p *PlatformClient) handleControlMessage(topic string, payload []byte) {
 	p.logger.Debugf("接收到控制消息: topic=%s, payload=%s", topic, string(payload))
 
-	// 解析topic获取deviceID
-	// topic格式: devices/telemetry/control/{device_id}
+	// 解析topic获取device_number
+	// topic格式: plugin/{service_identifier}/devices/telemetry/control/{device_number}
 	parts := strings.Split(topic, "/")
-	if len(parts) != 4 {
+	if len(parts) != 6 {
 		p.logger.Errorf("控制主题格式错误: %s", topic)
 		return
 	}
 
-	deviceID := parts[3]
+	deviceNumber := parts[5]
 
 	// 解析消息体
 	var controlData map[string]interface{}
@@ -476,9 +527,9 @@ func (p *PlatformClient) handleControlMessage(topic string, payload []byte) {
 	}
 
 	// 处理控制消息
-	if err := p.controlProcessor.ProcessControl(deviceID, controlData); err != nil {
-		p.logger.WithError(err).Errorf("处理控制消息失败: deviceID=%s", deviceID)
+	if err := p.controlProcessor.ProcessControl(deviceNumber, controlData); err != nil {
+		p.logger.WithError(err).Errorf("处理控制消息失败: device_number=%s", deviceNumber)
 	} else {
-		p.logger.Infof("控制消息处理成功: deviceID=%s", deviceID)
+		p.logger.Infof("控制消息处理成功: device_number=%s", deviceNumber)
 	}
 }

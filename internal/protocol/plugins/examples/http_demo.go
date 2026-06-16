@@ -1,8 +1,10 @@
 package examples
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"tp-plugin/internal/protocol"
@@ -52,7 +54,9 @@ func (h *HTTPDemoHandler) ExtractDeviceNumber(data []byte) (string, error) {
 
 func (h *HTTPDemoHandler) ParseData(data []byte) (*protocol.Message, error) {
 	var payload map[string]interface{}
-	if err := json.Unmarshal(data, &payload); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
 		return nil, err
 	}
 
@@ -62,16 +66,66 @@ func (h *HTTPDemoHandler) ParseData(data []byte) (*protocol.Message, error) {
 	}
 	deviceNumber := fmt.Sprintf("%v", dn)
 
-	// Remove device_number from data map to avoid duplication or keep it?
-	// Usually keep it or clean it. Let's keep it for now as it doesn't hurt.
+	values := make(map[string]interface{})
+	if nested, ok := payload["values"].(map[string]interface{}); ok {
+		for k, v := range nested {
+			values[k] = normalizeJSONNumber(v)
+		}
+	} else {
+		for k, v := range payload {
+			if k == "device_number" || k == "ts" {
+				continue
+			}
+			values[k] = normalizeJSONNumber(v)
+		}
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("values missing")
+	}
+
+	timestamp := time.Now()
+	if rawTS, ok := payload["ts"]; ok {
+		if ts, ok := parseUnixTimestamp(rawTS); ok {
+			timestamp = time.Unix(ts, 0)
+		}
+	}
 
 	return &protocol.Message{
 		DeviceNumber: deviceNumber,
 		MessageType:  "data",
-		Timestamp:    time.Now(),
-		Data:         payload,
+		Timestamp:    timestamp,
+		Data:         values,
 		Quality:      1,
 	}, nil
+}
+
+func normalizeJSONNumber(v interface{}) interface{} {
+	n, ok := v.(json.Number)
+	if !ok {
+		return v
+	}
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	if f, err := n.Float64(); err == nil {
+		return f
+	}
+	return n.String()
+}
+
+func parseUnixTimestamp(v interface{}) (int64, bool) {
+	switch t := v.(type) {
+	case json.Number:
+		ts, err := t.Int64()
+		return ts, err == nil
+	case float64:
+		return int64(t), true
+	case string:
+		ts, err := strconv.ParseInt(t, 10, 64)
+		return ts, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (h *HTTPDemoHandler) EncodeCommand(cmd *protocol.Command) ([]byte, error) {

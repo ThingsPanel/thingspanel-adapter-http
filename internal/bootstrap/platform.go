@@ -4,6 +4,7 @@ package bootstrap
 import (
 	"fmt"
 	"tp-plugin/internal/config"
+	"tp-plugin/internal/downlink"
 	"tp-plugin/internal/platform"
 
 	"github.com/sirupsen/logrus"
@@ -30,6 +31,10 @@ func InitPlatformClient(cfg *config.PlatformConfig) (*platform.PlatformClient, e
 	if err != nil {
 		return nil, fmt.Errorf("创建平台客户端失败: %v", err)
 	}
+
+	downlinkProcessor := downlink.NewProcessor(platformClient, logrus.StandardLogger())
+	platformClient.SetCommandProcessor(downlinkProcessor)
+	platformClient.SetControlProcessor(downlinkProcessor)
 
 	logrus.Info("平台客户端就绪")
 	return platformClient, nil

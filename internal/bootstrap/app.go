@@ -108,8 +108,8 @@ func StartApp(configPath string) (*AppContext, error) {
 		return nil, err
 	}
 
-	// 7. 启动HTTP服务 (ThingsPanel callbacks + device uplink)
-	if err := StartHTTPServer(platformClient, cfg.Server.HTTPPort, cfg.Server.HTTPAPIKey, cfg.Server.AutoRegister); err != nil {
+	// 7. 启动HTTP服务 (ThingsPanel callbacks only)
+	if err := StartHTTPServer(platformClient, cfg.Server.HTTPPort); err != nil {
 		app.Shutdown()
 		return nil, err
 	}
@@ -129,6 +129,7 @@ func initializeProtocol(app *AppContext, cfg *config.Config) error {
 		app.PlatformClient,
 		logrus.StandardLogger(),
 		cfg.Server.AutoRegister,
+		cfg.Server.HTTPAPIKey,
 	)
 
 	// Start Protocol

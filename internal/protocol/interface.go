@@ -12,6 +12,7 @@ type PlatformInterface interface {
 	SendDeviceStatus(deviceID string, status int) error
 	GetDevice(deviceNumber string) (*types.Device, error)
 	DynamicRegister(deviceNumber string) (*types.DeviceDynamicAuthData, error)
+	UpdateDeviceAddress(deviceNumber, address string)
 }
 
 // Message 设备消息结构

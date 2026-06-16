@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 	"tp-plugin/internal/pkg/logger"
 
@@ -20,6 +22,7 @@ type HTTPHandler struct {
 	logger       *logrus.Logger
 	server       *http.Server
 	autoRegister bool
+	httpAPIKey   string
 }
 
 type Response struct {
@@ -63,22 +66,23 @@ func (h *HTTPHandler) HandleCustomFormConfig(w http.ResponseWriter, r *http.Requ
 }
 
 // NewHTTPHandler Create HTTP Handler
-func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool) *HTTPHandler {
+func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool, httpAPIKey string) *HTTPHandler {
 	return &HTTPHandler{
 		port:         port,
 		handler:      handler,
 		platform:     platform,
 		logger:       logger,
 		autoRegister: autoRegister,
+		httpAPIKey:   httpAPIKey,
 	}
 }
 
 // Start Start HTTP Server
 func (h *HTTPHandler) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/data", h.handleData)
-	// Also handle root for convenience if needed, but sticking to plan
-	mux.HandleFunc("/", h.handleData) // Catch-all for simple testing
+	mux.HandleFunc("/health", h.HandleHealth)
+	mux.HandleFunc("/healthz", h.HandleHealth)
+	mux.HandleFunc("/api/v1/uplink", h.handleData)
 
 	h.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", h.port),
@@ -111,6 +115,17 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.httpAPIKey != "" {
+		got := r.Header.Get("X-Api-Key")
+		if got == "" {
+			got = r.Header.Get("Access-Token")
+		}
+		if got != h.httpAPIKey {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to read body")
@@ -131,6 +146,9 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		})
 		http.Error(w, "Failed to extract device number", http.StatusBadRequest)
 		return
+	}
+	if remoteIP := clientIP(r); remoteIP != "" {
+		h.platform.UpdateDeviceAddress(deviceNumber, remoteIP)
 	}
 
 	// 2. Get Device Info (Check if exists)
@@ -221,6 +239,30 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func clientIP(r *http.Request) string {
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		value := strings.TrimSpace(r.Header.Get(header))
+		if value == "" {
+			continue
+		}
+		if header == "X-Forwarded-For" {
+			value = strings.TrimSpace(strings.Split(value, ",")[0])
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			return ip.String()
+		}
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	if ip := net.ParseIP(r.RemoteAddr); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 // SendCommand - HTTP is usually request-response, so async command push is tricky.

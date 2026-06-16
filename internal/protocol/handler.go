@@ -16,11 +16,12 @@ type SingleProtocolHandler struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	autoRegister bool
+	httpAPIKey   string
 	httpHandler  *HTTPHandler
 }
 
 // NewSingleProtocolHandler 创建单协议处理器
-func NewSingleProtocolHandler(handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool) *SingleProtocolHandler {
+func NewSingleProtocolHandler(handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool, httpAPIKey string) *SingleProtocolHandler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &SingleProtocolHandler{
@@ -30,6 +31,7 @@ func NewSingleProtocolHandler(handler ProtocolHandler, platform PlatformInterfac
 		ctx:          ctx,
 		cancel:       cancel,
 		autoRegister: autoRegister,
+		httpAPIKey:   httpAPIKey,
 	}
 }
 
@@ -41,7 +43,7 @@ func (s *SingleProtocolHandler) Start() error {
 	}
 
 	// 创建并启动HTTP处理器 (Changed from TCP)
-	s.httpHandler = NewHTTPHandler(s.handler.Port(), s.handler, s.platform, s.logger, s.autoRegister)
+	s.httpHandler = NewHTTPHandler(s.handler.Port(), s.handler, s.platform, s.logger, s.autoRegister, s.httpAPIKey)
 	if err := s.httpHandler.Start(); err != nil {
 		s.handler.Stop()
 		return fmt.Errorf("启动HTTP服务器失败: %w", err)
