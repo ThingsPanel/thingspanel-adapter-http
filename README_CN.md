@@ -119,3 +119,19 @@ http://插件地址:19091
 ```powershell
 curl.exe http://127.0.0.1:19091/healthz
 ```
+
+## 虚拟设备测试
+
+长轮询测试：
+
+```powershell
+go run .\cmd\virtual_device -server http://127.0.0.1:19090/api/v1/uplink -device D001 -token aaaabbbb
+```
+
+直连下发测试：
+
+```powershell
+go run .\cmd\virtual_device -server http://127.0.0.1:19090/api/v1/uplink -device D001 -token aaaabbbb -poll=false -listen :8080
+```
+
+直连模式下，设备凭证里的 `downlinkHost` 填 `127.0.0.1`，端口保持默认 `8080`。

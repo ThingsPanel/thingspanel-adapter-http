@@ -94,10 +94,11 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 
 	cfg := parseConfig(device.Config)
 	body := map[string]interface{}{
-		"tp_message_id": messageID,
-		"tp_device_id":  deviceID,
-		"method":        message.Method,
-		"params":        message.Params,
+		"tp_message_id":    messageID,
+		"tp_device_id":     deviceID,
+		"tp_device_number": device.DeviceNumber,
+		"method":           message.Method,
+		"params":           message.Params,
 	}
 
 	respBody, err := p.post(device, cfg.CommandURL, cfg, body)
