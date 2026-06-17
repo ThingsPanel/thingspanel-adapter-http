@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"context"
 	"time"
+	"tp-plugin/internal/downlink"
 
 	"github.com/ThingsPanel/tp-protocol-sdk-go/types"
 )
@@ -13,6 +15,11 @@ type PlatformInterface interface {
 	GetDevice(deviceNumber string) (*types.Device, error)
 	DynamicRegister(deviceNumber string) (*types.DeviceDynamicAuthData, error)
 	UpdateDeviceAddress(deviceNumber, address string)
+}
+
+type DownlinkPoller interface {
+	Poll(ctx context.Context, deviceNumber string, timeout time.Duration) ([]downlink.QueuedMessage, error)
+	AckCommand(deviceNumber, messageID string, ok bool, data interface{}) error
 }
 
 // Message 设备消息结构

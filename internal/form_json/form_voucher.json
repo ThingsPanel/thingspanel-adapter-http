@@ -9,5 +9,15 @@
             "required": true,
             "type": "string"
         }
+    },
+    {
+        "dataKey": "downlinkHost",
+        "label": "设备下行地址",
+        "placeholder": "可选。公网可达设备填写 IP/域名；NAT 设备留空并使用长轮询",
+        "type": "input",
+        "validate": {
+            "required": false,
+            "type": "string"
+        }
     }
 ]

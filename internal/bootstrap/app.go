@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 	"tp-plugin/internal/config"
+	"tp-plugin/internal/downlink"
 	"tp-plugin/internal/platform"
 	"tp-plugin/internal/protocol"
 	"tp-plugin/internal/protocol/plugins/examples"
@@ -16,6 +17,7 @@ import (
 type AppContext struct {
 	Config          *config.Config
 	PlatformClient  *platform.PlatformClient
+	Downlink        *downlink.Processor
 	ProtocolHandler *protocol.SingleProtocolHandler
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -69,12 +71,13 @@ func StartApp(configPath string) (*AppContext, error) {
 	}
 
 	// 4. 初始化平台客户端
-	platformClient, err := InitPlatformClient(&cfg.Platform)
+	platformClient, downlinkProcessor, err := InitPlatformClient(&cfg.Platform)
 	if err != nil {
 		app.Shutdown()
 		return nil, err
 	}
 	app.PlatformClient = platformClient
+	app.Downlink = downlinkProcessor
 
 	// 5. 启动心跳定时器 - 每分钟发送一次心跳
 	app.heartbeatTicker = time.NewTicker(time.Second * time.Duration(cfg.Server.HeartbeatTimeout))
@@ -130,6 +133,7 @@ func initializeProtocol(app *AppContext, cfg *config.Config) error {
 		logrus.StandardLogger(),
 		cfg.Server.AutoRegister,
 		cfg.Server.HTTPAPIKey,
+		app.Downlink,
 	)
 
 	// Start Protocol

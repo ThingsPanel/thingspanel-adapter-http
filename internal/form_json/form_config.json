@@ -1,15 +1,5 @@
 [
     {
-        "dataKey": "host",
-        "label": "设备下行地址",
-        "placeholder": "可选，默认使用设备最近一次上报IP",
-        "type": "input",
-        "validate": {
-            "required": false,
-            "type": "string"
-        }
-    },
-    {
         "dataKey": "commandUrl",
         "label": "Command 指令推送路径",
         "placeholder": "/api/v1/command",

@@ -2,6 +2,7 @@ package downlink
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"tp-plugin/internal/platform"
 
@@ -26,7 +28,6 @@ const (
 type PlatformClient interface {
 	GetDevice(deviceNumber string) (*types.Device, error)
 	GetDeviceByID(deviceID string) (*types.Device, error)
-	GetDeviceAddress(deviceNumber string) (string, bool)
 	PublishCommandResponse(deviceID, messageID string, ok bool, data interface{}) error
 }
 
@@ -34,6 +35,10 @@ type Processor struct {
 	platform   PlatformClient
 	httpClient *http.Client
 	logger     *logrus.Logger
+	mu         sync.Mutex
+	queues     map[string][]QueuedMessage
+	inflight   map[string]QueuedMessage
+	notify     map[string]chan struct{}
 }
 
 type Config struct {
@@ -42,20 +47,49 @@ type Config struct {
 	Port       string
 }
 
+type QueuedMessage struct {
+	Type         string      `json:"type"`
+	DeviceID     string      `json:"device_id,omitempty"`
+	DeviceNumber string      `json:"device_number"`
+	MessageID    string      `json:"message_id,omitempty"`
+	Method       string      `json:"method,omitempty"`
+	Params       interface{} `json:"params,omitempty"`
+	Values       interface{} `json:"values,omitempty"`
+	CreatedAt    time.Time   `json:"created_at"`
+}
+
 func NewProcessor(platform PlatformClient, logger *logrus.Logger) *Processor {
 	return &Processor{
 		platform: platform,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger: logger,
+		logger:   logger,
+		queues:   make(map[string][]QueuedMessage),
+		inflight: make(map[string]QueuedMessage),
+		notify:   make(map[string]chan struct{}),
 	}
 }
 
 func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.CommandMessage) error {
 	device, err := p.platform.GetDeviceByID(deviceID)
 	if err != nil {
-		return fmt.Errorf("查询设备失败: device_id=%s: %w", deviceID, err)
+		return fmt.Errorf("query device failed: device_id=%s: %w", deviceID, err)
+	}
+
+	queueItem := QueuedMessage{
+		Type:         "command",
+		DeviceID:     deviceID,
+		DeviceNumber: device.DeviceNumber,
+		MessageID:    messageID,
+		Method:       message.Method,
+		Params:       message.Params,
+		CreatedAt:    time.Now(),
+	}
+
+	if directHost(device) == "" {
+		p.enqueue(queueItem)
+		return nil
 	}
 
 	cfg := parseConfig(device.Config)
@@ -68,7 +102,8 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 
 	respBody, err := p.post(device, cfg.CommandURL, cfg, body)
 	if err != nil {
-		p.logger.WithError(err).Errorf("下发 Command 失败: device_id=%s, device_number=%s", deviceID, device.DeviceNumber)
+		p.logger.WithError(err).Warnf("HTTP direct command failed, queued for long polling: device_id=%s, device_number=%s", deviceID, device.DeviceNumber)
+		p.enqueue(queueItem)
 		return nil
 	}
 
@@ -79,7 +114,7 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 	}
 	if len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, &deviceResp); err != nil {
-			p.logger.WithError(err).Warn("解析设备 Command 响应失败")
+			p.logger.WithError(err).Warn("decode device command response failed")
 			return nil
 		}
 	}
@@ -91,12 +126,12 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 			"device_id":       deviceID,
 			"message_id":      messageID,
 			"resp_message_id": deviceResp.MessageID,
-		}).Warn("设备响应 message_id 不匹配")
+		}).Warn("device command response message_id mismatch")
 		return nil
 	}
 
 	if err := p.platform.PublishCommandResponse(deviceID, messageID, deviceResp.OK, deviceResp.Data); err != nil {
-		p.logger.WithError(err).Error("回传 Command 响应失败")
+		p.logger.WithError(err).Error("publish command response failed")
 	}
 	return nil
 }
@@ -104,7 +139,20 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 func (p *Processor) ProcessControl(deviceNumber string, controlData map[string]interface{}) error {
 	device, err := p.platform.GetDevice(deviceNumber)
 	if err != nil {
-		return fmt.Errorf("查询设备失败: device_number=%s: %w", deviceNumber, err)
+		return fmt.Errorf("query device failed: device_number=%s: %w", deviceNumber, err)
+	}
+
+	queueItem := QueuedMessage{
+		Type:         "control",
+		DeviceID:     device.ID,
+		DeviceNumber: deviceNumber,
+		Values:       controlData,
+		CreatedAt:    time.Now(),
+	}
+
+	if directHost(device) == "" {
+		p.enqueue(queueItem)
+		return nil
 	}
 
 	cfg := parseConfig(device.Config)
@@ -114,27 +162,73 @@ func (p *Processor) ProcessControl(deviceNumber string, controlData map[string]i
 	}
 
 	if _, err := p.post(device, cfg.ControlURL, cfg, body); err != nil {
-		p.logger.WithError(err).Errorf("下发 Control 失败: device_number=%s", deviceNumber)
+		p.logger.WithError(err).Warnf("HTTP direct control failed, queued for long polling: device_number=%s", deviceNumber)
+		p.enqueue(queueItem)
 		return nil
 	}
 
 	p.logger.WithFields(logrus.Fields{
 		"device_number": deviceNumber,
 		"control_data":  controlData,
-	}).Info("设备控制消息已下发")
+	}).Info("device control message sent")
 	return nil
 }
 
+func (p *Processor) Poll(ctx context.Context, deviceNumber string, timeout time.Duration) ([]QueuedMessage, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		p.mu.Lock()
+		if len(p.queues[deviceNumber]) > 0 {
+			items := p.queues[deviceNumber]
+			delete(p.queues, deviceNumber)
+			for _, item := range items {
+				if item.Type == "command" && item.MessageID != "" {
+					p.inflight[inflightKey(deviceNumber, item.MessageID)] = item
+				}
+			}
+			p.mu.Unlock()
+			return items, nil
+		}
+		ch := p.notifyChanLocked(deviceNumber)
+		p.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return []QueuedMessage{}, nil
+		case <-ch:
+		}
+	}
+}
+
+func (p *Processor) AckCommand(deviceNumber, messageID string, ok bool, data interface{}) error {
+	key := inflightKey(deviceNumber, messageID)
+
+	p.mu.Lock()
+	item, exists := p.inflight[key]
+	if exists {
+		delete(p.inflight, key)
+	}
+	p.mu.Unlock()
+
+	if !exists {
+		device, err := p.platform.GetDevice(deviceNumber)
+		if err != nil {
+			return fmt.Errorf("ack command not found and device lookup failed: device_number=%s, message_id=%s: %w", deviceNumber, messageID, err)
+		}
+		item = QueuedMessage{DeviceID: device.ID, DeviceNumber: deviceNumber, MessageID: messageID}
+	}
+
+	return p.platform.PublishCommandResponse(item.DeviceID, messageID, ok, data)
+}
+
 func (p *Processor) post(device *types.Device, path string, cfg Config, body map[string]interface{}) ([]byte, error) {
-	host := ""
-	if address, ok := p.platform.GetDeviceAddress(device.DeviceNumber); ok {
-		host = address
-	}
+	host := directHost(device)
 	if host == "" {
-		host = firstString(device.Config, "host", "deviceHost", "device_host", "ip", "address", "addr")
-	}
-	if host == "" {
-		return nil, fmt.Errorf("设备下行地址未知：设备尚未上报，且未在配置中设置 host/deviceHost/ip/address")
+		return nil, fmt.Errorf("device direct downlink host is empty")
 	}
 
 	endpoint, err := buildURL(host, cfg.Port, path)
@@ -144,12 +238,12 @@ func (p *Processor) post(device *types.Device, path string, cfg Config, body map
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("序列化下发数据失败: %w", err)
+		return nil, fmt.Errorf("marshal downlink request failed: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("创建下发请求失败: %w", err)
+		return nil, fmt.Errorf("create downlink request failed: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if token := accessToken(device); token != "" {
@@ -161,19 +255,43 @@ func (p *Processor) post(device *types.Device, path string, cfg Config, body map
 		"device_number": device.DeviceNumber,
 		"url":           endpoint,
 		"body":          string(bodyBytes),
-	}).Info("准备下发 HTTP 控制请求")
+	}).Info("sending HTTP direct downlink request")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP 下发请求失败: %w", err)
+		return nil, fmt.Errorf("HTTP downlink request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("设备响应非 2xx: status=%s, body=%s", resp.Status, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("device response is not 2xx: status=%s, body=%s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
 	return respBody, nil
+}
+
+func (p *Processor) enqueue(item QueuedMessage) {
+	p.mu.Lock()
+	p.queues[item.DeviceNumber] = append(p.queues[item.DeviceNumber], item)
+	ch := p.notifyChanLocked(item.DeviceNumber)
+	delete(p.notify, item.DeviceNumber)
+	close(ch)
+	p.mu.Unlock()
+
+	p.logger.WithFields(logrus.Fields{
+		"device_number": item.DeviceNumber,
+		"type":          item.Type,
+		"message_id":    item.MessageID,
+	}).Info("downlink message queued for long polling")
+}
+
+func (p *Processor) notifyChanLocked(deviceNumber string) chan struct{} {
+	ch, ok := p.notify[deviceNumber]
+	if !ok {
+		ch = make(chan struct{})
+		p.notify[deviceNumber] = ch
+	}
+	return ch
 }
 
 func parseConfig(config map[string]interface{}) Config {
@@ -188,14 +306,31 @@ func accessToken(device *types.Device) string {
 	if token := firstString(device.Config, "accessToken", "access_token", "token"); token != "" {
 		return token
 	}
+	if token := voucherString(device, "accessToken", "access_token", "token"); token != "" {
+		return token
+	}
+	if device.Voucher != "" && !strings.HasPrefix(strings.TrimSpace(device.Voucher), "{") {
+		return strings.TrimSpace(device.Voucher)
+	}
+	return ""
+}
+
+func directHost(device *types.Device) string {
+	if host := voucherString(device, "downlinkHost", "downlink_host", "host", "deviceHost", "device_host", "ip", "address", "addr"); host != "" {
+		return host
+	}
+	return firstString(device.Config, "downlinkHost", "downlink_host", "host", "deviceHost", "device_host", "ip", "address", "addr")
+}
+
+func voucherString(device *types.Device, keys ...string) string {
 	if device.Voucher == "" {
 		return ""
 	}
 	var voucher map[string]interface{}
 	if err := json.Unmarshal([]byte(device.Voucher), &voucher); err != nil {
-		return device.Voucher
+		return ""
 	}
-	return firstString(voucher, "accessToken", "access_token", "token")
+	return firstString(voucher, keys...)
 }
 
 func firstString(m map[string]interface{}, keys ...string) string {
@@ -245,7 +380,7 @@ func buildURL(host, port, path string) (string, error) {
 	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
 		u, err := url.Parse(host)
 		if err != nil {
-			return "", fmt.Errorf("设备地址格式错误: %w", err)
+			return "", fmt.Errorf("invalid device host: %w", err)
 		}
 		if u.Port() == "" && port != "" {
 			u.Host = net.JoinHostPort(u.Hostname(), port)
@@ -256,4 +391,8 @@ func buildURL(host, port, path string) (string, error) {
 	}
 
 	return "http://" + net.JoinHostPort(host, port) + path, nil
+}
+
+func inflightKey(deviceNumber, messageID string) string {
+	return deviceNumber + "\x00" + messageID
 }

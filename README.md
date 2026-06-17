@@ -2,17 +2,17 @@
 
 # ThingsPanel HTTP Protocol Plugin
 
-HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; the platform sends control messages through MQTT; the plugin forwards control messages to devices through HTTP POST.
+HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; the platform sends commands or control messages through MQTT; the plugin supports both direct HTTP downlink and device long polling.
 
 ## Ports
 
 | Config | Default | Purpose |
 | --- | --- | --- |
-| `server.port` | `19090` | Device uplink only: `POST /api/v1/uplink` |
+| `server.port` | `19090` | Device-facing API: uplink, poll, ack |
 | `server.http_port` | `19091` | ThingsPanel callbacks and health checks |
-| Device downlink port | `8080` | Device-owned HTTP server for control, default path `/api/v1/control` |
+| Device downlink port | `8080` | Device-owned HTTP server for direct downlink, default path `/api/v1/control` |
 
-Do not send device uplink traffic to `19091`. Do not send control traffic back to plugin ports `19090/19091`; control is posted to the device HTTP server.
+Do not send device uplink traffic to `19091`. Platform callbacks use `19091`; devices use `19090`.
 
 ## Run
 
@@ -35,8 +35,6 @@ platform:
   service_identifier: "HTTP"
 ```
 
-Make sure the ThingsPanel API and MQTT broker are reachable.
-
 ## Device Uplink
 
 ```text
@@ -52,7 +50,79 @@ curl.exe -X POST http://127.0.0.1:19090/api/v1/uplink `
   -d "{\"device_number\":\"D001\",\"temp\":25.5,\"hum\":60.2,\"status\":\"active\"}"
 ```
 
-The plugin stores the latest source IP for each `device_number` and uses it for later control downlink. On Windows, prefer `127.0.0.1` over `localhost` in local tests to avoid IPv6 `[::1]`.
+## Downlink Modes
+
+### Direct Mode
+
+Use this when the device or middleware has a public/reachable HTTP endpoint.
+
+Set `downlinkHost` in the device voucher. The plugin posts directly to:
+
+```text
+POST http://downlinkHost:8080/api/v1/control
+```
+
+Command path defaults to `/api/v1/command`; control path defaults to `/api/v1/control`; port defaults to `8080`.
+
+### Long Polling Mode
+
+Use this when the device is behind NAT or otherwise not reachable by the plugin.
+
+```text
+GET http://plugin-host:19090/api/v1/devices/{device_number}/poll
+```
+
+The poll request waits up to 30 seconds. If no pending message exists, the response is:
+
+```json
+{
+  "commands": []
+}
+```
+
+When messages exist:
+
+```json
+{
+  "commands": [
+    {
+      "type": "command",
+      "device_number": "D001",
+      "message_id": "msg-001",
+      "method": "set",
+      "params": {}
+    }
+  ]
+}
+```
+
+After executing a command from poll, the device reports the result:
+
+```text
+POST http://plugin-host:19090/api/v1/devices/{device_number}/commands/{message_id}/ack
+```
+
+```json
+{
+  "ok": true,
+  "data": {}
+}
+```
+
+Authentication uses the device `accessToken` from the voucher. Send it as `X-Api-Key`, `Access-Token`, or `Authorization: Bearer <token>`.
+
+## Forms
+
+`FormType=CFG` returns `internal/form_json/form_config.json`:
+
+- `commandUrl`: default `/api/v1/command`.
+- `controlUrl`: default `/api/v1/control`.
+- `port`: default `8080`.
+
+`FormType=VCR` returns `internal/form_json/form_voucher.json`:
+
+- `accessToken`: device credential.
+- `downlinkHost`: optional direct downlink host. Leave empty for long polling mode.
 
 ## Platform Callback
 
@@ -66,53 +136,6 @@ Health check:
 curl.exe http://127.0.0.1:19091/healthz
 ```
 
-For Docker platform-to-host access, use the Docker gateway address, for example:
-
-```text
-http://172.17.0.1:19091
-```
-
-## Control Downlink
-
-Platform MQTT message:
-
-```text
-Topic: plugin/HTTP/devices/telemetry/control/D001
-Payload: {"xx":11}
-```
-
-The plugin then posts to the device:
-
-```text
-POST http://device-ip:8080/api/v1/control
-```
-
-Body:
-
-```json
-{
-  "tp_device_number": "D001",
-  "values": {
-    "xx": 11
-  }
-}
-```
-
-If the log says connection refused, the device is not listening on the target IP/port/path.
-
-## Forms
-
-`FormType=CFG` returns `internal/form_json/form_config.json`:
-
-- `host`: optional device downlink host. The latest uplink IP is used first.
-- `commandUrl`: default `/api/v1/command`.
-- `controlUrl`: default `/api/v1/control`.
-- `port`: default `8080`.
-
-`FormType=VCR` returns `internal/form_json/form_voucher.json`:
-
-- `accessToken`: device credential.
-
 ## Virtual Device
 
 The current virtual device only reports telemetry:
@@ -121,7 +144,7 @@ The current virtual device only reports telemetry:
 go run .\cmd\virtual_device -server http://127.0.0.1:19090/api/v1/uplink -device D001 -token aaaabbbb
 ```
 
-It does not listen on `/api/v1/control`. To test downlink, use a real device or start a separate HTTP server on `8080/api/v1/control`.
+It does not listen on `/api/v1/control` and does not poll yet.
 
 ## Project Structure
 
@@ -129,16 +152,9 @@ It does not listen on `/api/v1/control`. To test downlink, use a real device or 
 cmd/                  entrypoints and virtual device
 configs/              configuration
 internal/bootstrap/   startup and platform client wiring
-internal/protocol/    device uplink HTTP server
+internal/protocol/    device-facing HTTP server
 internal/platform/    ThingsPanel API/MQTT client
-internal/downlink/    HTTP downlink to devices
+internal/downlink/    direct HTTP downlink and long-poll queues
 internal/handler/     platform callback handlers
 internal/form_json/   frontend form definitions
 ```
-
-## Troubleshooting
-
-- **MQTT connection failed**: check `platform.mqtt_broker`.
-- **Uplink 401**: check `Access-Token` or `X-Api-Key` against `server.http_api_key`.
-- **Downlink connection refused**: the device is not listening on `device-ip:port/controlUrl`.
-- **Downlink goes to `[::1]`**: local uplink used `localhost`; use `127.0.0.1`.

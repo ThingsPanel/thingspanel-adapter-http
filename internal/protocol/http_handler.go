@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"tp-plugin/internal/pkg/logger"
@@ -23,6 +24,7 @@ type HTTPHandler struct {
 	server       *http.Server
 	autoRegister bool
 	httpAPIKey   string
+	downlink     DownlinkPoller
 }
 
 type Response struct {
@@ -66,7 +68,7 @@ func (h *HTTPHandler) HandleCustomFormConfig(w http.ResponseWriter, r *http.Requ
 }
 
 // NewHTTPHandler Create HTTP Handler
-func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool, httpAPIKey string) *HTTPHandler {
+func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterface, logger *logrus.Logger, autoRegister bool, httpAPIKey string, downlink DownlinkPoller) *HTTPHandler {
 	return &HTTPHandler{
 		port:         port,
 		handler:      handler,
@@ -74,6 +76,7 @@ func NewHTTPHandler(port int, handler ProtocolHandler, platform PlatformInterfac
 		logger:       logger,
 		autoRegister: autoRegister,
 		httpAPIKey:   httpAPIKey,
+		downlink:     downlink,
 	}
 }
 
@@ -83,6 +86,7 @@ func (h *HTTPHandler) Start() error {
 	mux.HandleFunc("/health", h.HandleHealth)
 	mux.HandleFunc("/healthz", h.HandleHealth)
 	mux.HandleFunc("/api/v1/uplink", h.handleData)
+	mux.HandleFunc("/api/v1/devices/", h.handleDeviceAPI)
 
 	h.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", h.port),
@@ -239,6 +243,180 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func (h *HTTPHandler) handleDeviceAPI(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/devices/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 2 {
+		http.NotFound(w, r)
+		return
+	}
+
+	deviceNumber, err := url.PathUnescape(parts[0])
+	if err != nil || deviceNumber == "" {
+		http.Error(w, "Invalid device number", http.StatusBadRequest)
+		return
+	}
+
+	switch {
+	case len(parts) == 2 && parts[1] == "poll":
+		h.handlePoll(w, r, deviceNumber)
+	case len(parts) == 4 && parts[1] == "commands" && parts[3] == "ack":
+		messageID, err := url.PathUnescape(parts[2])
+		if err != nil || messageID == "" {
+			http.Error(w, "Invalid message id", http.StatusBadRequest)
+			return
+		}
+		h.handleCommandAck(w, r, deviceNumber, messageID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (h *HTTPHandler) handlePoll(w http.ResponseWriter, r *http.Request, deviceNumber string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.downlink == nil {
+		http.Error(w, "Downlink polling is not enabled", http.StatusNotImplemented)
+		return
+	}
+
+	device, err := h.platform.GetDevice(deviceNumber)
+	if err != nil {
+		h.logger.WithError(err).Warnf("poll device not found: %s", deviceNumber)
+		http.Error(w, "Device not found", http.StatusNotFound)
+		return
+	}
+	if !h.authorizeDeviceRequest(r, device.Voucher, device.Config) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	timeout := pollTimeout(r)
+	items, err := h.downlink.Poll(r.Context(), deviceNumber, timeout)
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		h.logger.WithError(err).Errorf("poll failed: device_number=%s", deviceNumber)
+		http.Error(w, "Poll failed", http.StatusInternalServerError)
+		return
+	}
+
+	_ = h.platform.SendDeviceStatus(device.ID, 1)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"commands": items,
+	})
+}
+
+func (h *HTTPHandler) handleCommandAck(w http.ResponseWriter, r *http.Request, deviceNumber, messageID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.downlink == nil {
+		http.Error(w, "Downlink polling is not enabled", http.StatusNotImplemented)
+		return
+	}
+
+	device, err := h.platform.GetDevice(deviceNumber)
+	if err != nil {
+		h.logger.WithError(err).Warnf("ack device not found: %s", deviceNumber)
+		http.Error(w, "Device not found", http.StatusNotFound)
+		return
+	}
+	if !h.authorizeDeviceRequest(r, device.Voucher, device.Config) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		OK   bool        `json:"ok"`
+		Data interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.downlink.AckCommand(deviceNumber, messageID, req.OK, req.Data); err != nil {
+		h.logger.WithError(err).Errorf("ack command failed: device_number=%s, message_id=%s", deviceNumber, messageID)
+		http.Error(w, "Ack failed", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+	})
+}
+
+func (h *HTTPHandler) authorizeDeviceRequest(r *http.Request, voucher string, config map[string]interface{}) bool {
+	expected := firstString(config, "accessToken", "access_token", "token")
+	if expected == "" {
+		expected = voucherToken(voucher)
+	}
+	if expected == "" {
+		return true
+	}
+
+	got := r.Header.Get("X-Api-Key")
+	if got == "" {
+		got = r.Header.Get("Access-Token")
+	}
+	if got == "" {
+		got = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	return strings.TrimSpace(got) == expected
+}
+
+func pollTimeout(r *http.Request) time.Duration {
+	timeout := 30 * time.Second
+	if raw := strings.TrimSpace(r.URL.Query().Get("timeout")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			timeout = parsed
+		}
+	}
+	if timeout <= 0 || timeout > 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	return timeout
+}
+
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func voucherToken(voucher string) string {
+	voucher = strings.TrimSpace(voucher)
+	if voucher == "" {
+		return ""
+	}
+	if !strings.HasPrefix(voucher, "{") {
+		return voucher
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal([]byte(voucher), &values); err != nil {
+		return ""
+	}
+	return firstString(values, "accessToken", "access_token", "token")
+}
+
+func firstString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := m[key]
+		if !ok || raw == nil {
+			continue
+		}
+		if value, ok := raw.(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func clientIP(r *http.Request) string {
