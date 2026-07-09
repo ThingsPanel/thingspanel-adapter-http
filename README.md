@@ -2,7 +2,7 @@
 
 # ThingsPanel HTTP Protocol Plugin
 
-HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; the platform sends commands or control messages through MQTT; the plugin supports both direct HTTP downlink and device long polling.
+HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; ThingsPanel sends commands or control messages through MQTT; the plugin supports both direct HTTP downlink and device long polling.
 
 ## Ports
 
@@ -10,9 +10,9 @@ HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; the p
 | --- | --- | --- |
 | `server.port` | `19090` | Device-facing API: uplink, poll, ack |
 | `server.http_port` | `19091` | ThingsPanel callbacks and health checks |
-| Device downlink port | `8080` | Device-owned HTTP server for direct downlink, default path `/api/v1/control` |
+| Device downlink port | `8080` | Device-owned HTTP server for direct downlink, default paths `/api/v1/control` and `/api/v1/command` |
 
-Do not send device uplink traffic to `19091`. Platform callbacks use `19091`; devices use `19090`.
+Device uplink, long polling, and ack requests use `19090`. Platform callbacks use `19091`.
 
 ## Run
 
@@ -35,13 +35,15 @@ platform:
   service_identifier: "HTTP"
 ```
 
+## Device Identity
+
+Devices identify themselves with `device_number`, for example `D001`. The platform's internal `device_id` is used by ThingsPanel after the plugin resolves the device configuration. Device payloads and long-poll URLs should use `device_number`, not `device_id`.
+
 ## Device Uplink
 
 ```text
 POST http://plugin-host:19090/api/v1/uplink
 ```
-
-Example:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:19090/api/v1/uplink `
@@ -56,10 +58,11 @@ curl.exe -X POST http://127.0.0.1:19090/api/v1/uplink `
 
 Use this when the device or middleware has a public/reachable HTTP endpoint.
 
-Set `downlinkHost` in the device voucher. The plugin posts directly to:
+Set optional `downlinkHost` in the device voucher. The plugin posts directly to:
 
 ```text
 POST http://downlinkHost:8080/api/v1/control
+POST http://downlinkHost:8080/api/v1/command
 ```
 
 Command path defaults to `/api/v1/command`; control path defaults to `/api/v1/control`; port defaults to `8080`.
@@ -68,11 +71,15 @@ Command path defaults to `/api/v1/command`; control path defaults to `/api/v1/co
 
 Use this when the device is behind NAT or otherwise not reachable by the plugin.
 
+If `downlinkHost` is empty, downlink messages are queued for the device to fetch. If direct mode is configured but the direct request fails, the plugin also falls back to the long-poll queue.
+
 ```text
 GET http://plugin-host:19090/api/v1/devices/{device_number}/poll
 ```
 
-The poll request waits up to 30 seconds. If no pending message exists, the response is:
+The poll request waits up to 30 seconds.
+
+No pending message:
 
 ```json
 {
@@ -80,7 +87,7 @@ The poll request waits up to 30 seconds. If no pending message exists, the respo
 }
 ```
 
-When messages exist:
+Pending command:
 
 ```json
 {
@@ -138,13 +145,27 @@ curl.exe http://127.0.0.1:19091/healthz
 
 ## Virtual Device
 
-The current virtual device only reports telemetry:
+Long polling test:
 
 ```powershell
 go run .\cmd\virtual_device -server http://127.0.0.1:19090/api/v1/uplink -device D001 -token aaaabbbb
 ```
 
-It does not listen on `/api/v1/control` and does not poll yet.
+Direct downlink test:
+
+```powershell
+go run .\cmd\virtual_device -server http://127.0.0.1:19090/api/v1/uplink -device D001 -token aaaabbbb -poll=false -listen :8080
+```
+
+For direct mode, set the device voucher `downlinkHost` to `127.0.0.1` and keep the default port `8080`.
+
+## Troubleshooting
+
+- **Device not found**: confirm the ThingsPanel device exists and its device number matches the `device_number` in payloads and URLs.
+- **SDK log shows empty `deviceID` while querying**: the plugin queries by `device_number` for device uplink. The SDK log only prints `deviceID`, so an empty value there does not mean the plugin used `device_id`.
+- **Uplink 401**: check `Access-Token` or `X-Api-Key` against the device credential.
+- **Direct downlink connection refused**: the device is not listening on `downlinkHost:port/controlUrl` or `commandUrl`.
+- **Long polling returns empty commands**: check that the platform sent the downlink to the expected `device_number` and that the device credential leaves `downlinkHost` empty or direct mode failed.
 
 ## Project Structure
 

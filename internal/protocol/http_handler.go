@@ -119,17 +119,6 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.httpAPIKey != "" {
-		got := r.Header.Get("X-Api-Key")
-		if got == "" {
-			got = r.Header.Get("Access-Token")
-		}
-		if got != h.httpAPIKey {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to read body")
@@ -142,11 +131,10 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	deviceNumber, err := h.handler.ExtractDeviceNumber(body)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to extract device number")
-		// Log to unknown device log?
 		logger.LogDeviceData("unknown", "received", body, map[string]interface{}{
 			"extract_error": err.Error(),
-			"remote_addr":   r.RemoteAddr,
-			"protocol":      h.handler.Name(),
+			"remote_addr":  r.RemoteAddr,
+			"protocol":     h.handler.Name(),
 		})
 		http.Error(w, "Failed to extract device number", http.StatusBadRequest)
 		return
@@ -179,7 +167,6 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			// Log to unknown device log?
 			logger.LogDeviceEvent(deviceNumber, "get_device_failed", map[string]interface{}{
 				"error":         err.Error(),
 				"device_number": deviceNumber,
@@ -191,13 +178,28 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID = device.ID
 
+	// 3. Authorize using device's Access-Token from voucher
+	if !h.authorizeDeviceRequest(r, device.Voucher, device.Config) {
+		got := r.Header.Get("X-Api-Key")
+		if got == "" {
+			got = r.Header.Get("Access-Token")
+		}
+		h.logger.WithFields(logrus.Fields{
+			"remote_addr":   r.RemoteAddr,
+			"device_number": deviceNumber,
+			"got_token":     got,
+		}).Warn("Uplink auth failed: token mismatch")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	// Log received data
 	logger.LogDeviceData(deviceNumber, "received", body, map[string]interface{}{
 		"remote_addr": r.RemoteAddr,
 		"protocol":    h.handler.Name(),
 	})
 
-	// 3. Parse Data
+	// 4. Parse Data
 	message, err := h.handler.ParseData(body)
 	if err != nil {
 		h.logger.WithError(err).Error("Parse data failed")
