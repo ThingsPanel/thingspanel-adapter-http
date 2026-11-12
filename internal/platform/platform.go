@@ -107,14 +107,23 @@ func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, e
 }
 
 func (p *PlatformClient) GetDevice(deviceNumber string) (*types.Device, error) {
+	var knownID string
 	p.cacheMutex.RLock()
 	if device, ok := p.deviceCache[deviceNumber]; !p.Config.Managed && ok && device.ID != "" {
 		p.cacheMutex.RUnlock()
 		return device, nil
 	}
+	if p.Config.Managed {
+		if d := p.deviceCache[deviceNumber]; d != nil {
+			knownID = d.ID
+		}
+	}
 	p.cacheMutex.RUnlock()
 
 	req := &client.DeviceConfigRequest{DeviceNumber: deviceNumber}
+	if knownID != "" {
+		req = &client.DeviceConfigRequest{DeviceID: knownID}
+	}
 	resp, err := p.getDeviceConfig(context.Background(), req)
 	if err != nil {
 		return nil, err
@@ -131,6 +140,10 @@ func (p *PlatformClient) GetDevice(deviceNumber string) (*types.Device, error) {
 	}
 	if resp.Data.ID == "" {
 		return nil, fmt.Errorf("设备不存在: device_number=%s", deviceNumber)
+	}
+	if p.Config.Managed && resp.Data.DeviceNumber != deviceNumber {
+		p.ClearDeviceCache(deviceNumber)
+		return nil, fmt.Errorf("device number binding changed")
 	}
 
 	p.cacheMutex.Lock()
