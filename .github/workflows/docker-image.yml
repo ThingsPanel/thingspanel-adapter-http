@@ -11,6 +11,9 @@ on:
       version:
         description: "Image tag to build, for example v1.0.0"
         required: false
+      source_ref:
+        description: "Reviewed source commit for a manual rebuild"
+        required: false
 # 构建任务
 jobs:
   build:
@@ -21,6 +24,16 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          ref: ${{ github.event.release.tag_name || inputs.source_ref || github.ref }}
+
+      - name: Verify build source
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          echo "Building source commit $actual"
+          if [ -n "$EXPECTED_SOURCE" ]; then test "$actual" = "$EXPECTED_SOURCE"; fi
       
       # 获取版本号
       - name: 获取版本号
@@ -58,6 +71,8 @@ jobs:
           file: ./Dockerfile.managed
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
+          sbom: false
           tags: |
             thingspanel/thingspanel-adapter-http:${{ env.VERSION }}
             ghcr.io/${{ env.OWNER_LC }}/thingspanel-adapter-http:${{ env.VERSION }}
