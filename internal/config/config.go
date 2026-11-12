@@ -20,6 +20,8 @@ type ServerConfig struct {
 }
 
 type PlatformConfig struct {
+	APIToken          string `mapstructure:"api_token"`
+	Managed           bool   `mapstructure:"managed"`
 	URL               string `mapstructure:"url"`                // 平台API地址
 	MQTTBroker        string `mapstructure:"mqtt_broker"`        // MQTT服务器地址
 	MQTTUsername      string `mapstructure:"mqtt_username"`      // MQTT用户名

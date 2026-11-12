@@ -1,0 +1,20 @@
+server:
+  port: 19090
+  http_port: 19091
+  heartbeatTimeout: 30
+  auto_register: false
+platform:
+  managed: true
+  api_token: ""
+  url: http://backend:9999
+  mqtt_broker: tcp://mosquitto:1883
+  mqtt_username: ""
+  mqtt_password: ""
+  service_identifier: HTTP
+  template_secret: ""
+log:
+  level: info
+  filePath: /tmp/adapter.log
+  enableFile: false
+  device_log:
+    enabled: false

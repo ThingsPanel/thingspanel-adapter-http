@@ -24,6 +24,11 @@ func LoadConfig(configPath string) (*config.Config, error) {
 	viper.AutomaticEnv()
 	// 将配置键中的点号替换为下划线，以匹配环境变量命名规范
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	for _, key := range []string{"platform.api_token", "platform.managed", "server.auto_register"} {
+		if err := viper.BindEnv(key); err != nil {
+			return nil, err
+		}
+	}
 
 	// 读取配置文件（如果存在）
 	if err := viper.ReadInConfig(); err != nil {
@@ -36,6 +41,14 @@ func LoadConfig(configPath string) (*config.Config, error) {
 	var cfg config.Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("解析配置失败: %v", err)
+	}
+	if cfg.Platform.Managed {
+		if strings.TrimSpace(cfg.Platform.APIToken) == "" {
+			return nil, fmt.Errorf("managed HTTP plugin requires a runtime identity")
+		}
+		if cfg.Server.AutoRegister {
+			return nil, fmt.Errorf("managed HTTP plugin requires devices to be created in the platform")
+		}
 	}
 
 	logrus.WithFields(logrus.Fields{

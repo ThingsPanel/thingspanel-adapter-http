@@ -16,6 +16,8 @@ func InitPlatformClient(cfg *config.PlatformConfig) (*platform.PlatformClient, *
 	}).Info("platform client config check")
 
 	platformClient, err := platform.NewPlatformClient(platform.Config{
+		APIToken:          cfg.APIToken,
+		Managed:           cfg.Managed,
 		BaseURL:           cfg.URL,
 		MQTTBroker:        cfg.MQTTBroker,
 		MQTTUsername:      cfg.MQTTUsername,

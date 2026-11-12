@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +47,8 @@ type PlatformClient struct {
 }
 
 type Config struct {
+	APIToken              string
+	Managed               bool
 	BaseURL               string
 	MQTTBroker            string
 	MQTTUsername          string
@@ -56,19 +60,22 @@ type Config struct {
 }
 
 func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, error) {
+	if config.Managed && strings.TrimSpace(config.APIToken) == "" {
+		return nil, fmt.Errorf("managed HTTP plugin requires a runtime identity")
+	}
 	baseURL := strings.TrimSpace(config.BaseURL)
 	if baseURL != "" && !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "http://" + baseURL
 	}
 
 	sdkConfig := client.ClientConfig{
+		Logger:       log.New(io.Discard, "", 0), // SDK logs include request bodies containing credentials.
 		BaseURL:      baseURL,
 		MQTTBroker:   config.MQTTBroker,
 		MQTTUsername: config.MQTTUsername,
 		MQTTPassword: config.MQTTPassword,
 		MQTTClientID: fmt.Sprintf("%s-%d", config.ServiceIdentifier, time.Now().Unix()),
 	}
-	logrus.Infof("sdkConfig: %+v", sdkConfig)
 
 	sdkClient, err := client.NewClient(sdkConfig)
 	if err != nil {
@@ -90,14 +97,14 @@ func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, e
 
 func (p *PlatformClient) GetDevice(deviceNumber string) (*types.Device, error) {
 	p.cacheMutex.RLock()
-	if device, ok := p.deviceCache[deviceNumber]; ok && device.ID != "" {
+	if device, ok := p.deviceCache[deviceNumber]; !p.Config.Managed && ok && device.ID != "" {
 		p.cacheMutex.RUnlock()
 		return device, nil
 	}
 	p.cacheMutex.RUnlock()
 
 	req := &client.DeviceConfigRequest{DeviceNumber: deviceNumber}
-	resp, err := p.sdkClient.Device().GetDeviceConfig(context.Background(), req)
+	resp, err := p.getDeviceConfig(context.Background(), req)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +131,9 @@ func (p *PlatformClient) GetDevice(deviceNumber string) (*types.Device, error) {
 }
 
 func (p *PlatformClient) DynamicRegister(deviceNumber string) (*types.DeviceDynamicAuthData, error) {
+	if p.Config.Managed {
+		return nil, fmt.Errorf("create managed HTTP devices in the platform first")
+	}
 	req := &client.DeviceDynamicAuthRequest{
 		TemplateSecret: p.Config.TemplateSecret,
 		DeviceNumber:   deviceNumber,
@@ -141,6 +151,9 @@ func (p *PlatformClient) DynamicRegister(deviceNumber string) (*types.DeviceDyna
 }
 
 func (p *PlatformClient) SubDeviceDynamicRegister(deviceNumber string, subDeviceAddr string, parentDeviceNumber string) (*types.DeviceDynamicAuthData, error) {
+	if p.Config.Managed {
+		return nil, fmt.Errorf("managed HTTP dynamic registration is disabled")
+	}
 	if p.Config.SubTemplateSecret == "" {
 		return nil, fmt.Errorf("子设备模板密钥未配置")
 	}
@@ -164,6 +177,9 @@ func (p *PlatformClient) SubDeviceDynamicRegister(deviceNumber string, subDevice
 }
 
 func (p *PlatformClient) GatewayDynamicRegister(deviceNumber string) (*types.DeviceDynamicAuthData, error) {
+	if p.Config.Managed {
+		return nil, fmt.Errorf("managed HTTP dynamic registration is disabled")
+	}
 	if p.Config.GatewayTemplateSecret == "" {
 		return nil, fmt.Errorf("网关模板密钥未配置")
 	}
@@ -185,6 +201,9 @@ func (p *PlatformClient) GatewayDynamicRegister(deviceNumber string) (*types.Dev
 }
 
 func (p *PlatformClient) GetServiceAccessPoints() ([]types.ServiceAccessRsp, error) {
+	if p.Config.Managed {
+		return nil, fmt.Errorf("HTTP is a protocol plugin, not a service access plugin")
+	}
 	req := &client.ServiceAccessRequest{
 		ServiceIdentifier: p.Config.ServiceIdentifier,
 	}
@@ -234,14 +253,14 @@ func (p *PlatformClient) GetDeviceAddress(deviceNumber string) (string, bool) {
 
 func (p *PlatformClient) GetDeviceByID(deviceID string) (*types.Device, error) {
 	p.cacheMutex.RLock()
-	if device, ok := p.deviceIDCache[deviceID]; ok && device.ID != "" {
+	if device, ok := p.deviceIDCache[deviceID]; !p.Config.Managed && ok && device.ID != "" {
 		p.cacheMutex.RUnlock()
 		return device, nil
 	}
 	p.cacheMutex.RUnlock()
 
 	req := &client.DeviceConfigRequest{DeviceID: deviceID}
-	resp, err := p.sdkClient.Device().GetDeviceConfig(context.Background(), req)
+	resp, err := p.getDeviceConfig(context.Background(), req)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +358,7 @@ func (p *PlatformClient) SendHeartbeat(ctx context.Context, serviceIdentifier st
 		ServiceIdentifier: serviceIdentifier,
 	}
 
-	resp, err := p.sdkClient.Service().SendHeartbeat(ctx, req)
+	resp, err := p.sendHeartbeat(ctx, req)
 	if err != nil {
 		return fmt.Errorf("发送心跳失败: %w", err)
 	}

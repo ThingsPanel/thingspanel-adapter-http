@@ -133,8 +133,8 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).Error("Failed to extract device number")
 		logger.LogDeviceData("unknown", "received", body, map[string]interface{}{
 			"extract_error": err.Error(),
-			"remote_addr":  r.RemoteAddr,
-			"protocol":     h.handler.Name(),
+			"remote_addr":   r.RemoteAddr,
+			"protocol":      h.handler.Name(),
 		})
 		http.Error(w, "Failed to extract device number", http.StatusBadRequest)
 		return
@@ -180,14 +180,9 @@ func (h *HTTPHandler) handleData(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Authorize using device's Access-Token from voucher
 	if !h.authorizeDeviceRequest(r, device.Voucher, device.Config) {
-		got := r.Header.Get("X-Api-Key")
-		if got == "" {
-			got = r.Header.Get("Access-Token")
-		}
 		h.logger.WithFields(logrus.Fields{
 			"remote_addr":   r.RemoteAddr,
 			"device_number": deviceNumber,
-			"got_token":     got,
 		}).Warn("Uplink auth failed: token mismatch")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -361,7 +356,8 @@ func (h *HTTPHandler) authorizeDeviceRequest(r *http.Request, voucher string, co
 		expected = voucherToken(voucher)
 	}
 	if expected == "" {
-		return true
+		managed, ok := h.platform.(interface{ ManagedRuntime() bool })
+		return !ok || !managed.ManagedRuntime()
 	}
 
 	got := r.Header.Get("X-Api-Key")
