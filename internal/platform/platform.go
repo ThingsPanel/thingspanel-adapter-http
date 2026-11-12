@@ -83,8 +83,17 @@ func NewPlatformClient(config Config, logger *logrus.Logger) (*PlatformClient, e
 	if err != nil {
 		return nil, err
 	}
-	if err := sdkClient.Connect(); err != nil {
-		return nil, err
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		err := sdkClient.Connect()
+		if err == nil {
+			break
+		}
+		if !config.Managed || time.Now().After(deadline) {
+			return nil, err
+		}
+		// The host reconciles the new instance's broker scope asynchronously.
+		time.Sleep(2 * time.Second)
 	}
 
 	return &PlatformClient{
