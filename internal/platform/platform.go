@@ -35,6 +35,8 @@ type CommandMessage struct {
 }
 
 type PlatformClient struct {
+	managedCancel    context.CancelFunc
+	managedOnce      sync.Once
 	sdkClient        *client.Client
 	logger           *logrus.Logger
 	deviceCache      map[string]*types.Device
@@ -309,6 +311,9 @@ func (p *PlatformClient) SendTelemetry(deviceID string, values map[string]interf
 }
 
 func (p *PlatformClient) Close() {
+	if p.managedCancel != nil {
+		p.managedCancel()
+	}
 	if p.sdkClient != nil {
 		p.sdkClient.Close()
 	}
@@ -341,6 +346,21 @@ func (p *PlatformClient) PublishCommandResponse(deviceID, messageID string, ok b
 	}
 
 	topic := fmt.Sprintf("plugin/%s/devices/command_response/%s/%s", p.Config.ServiceIdentifier, deviceID, messageID)
+	if p.Config.Managed {
+		result := 1
+		if ok {
+			result = 0
+		}
+		ack, err := json.Marshal(map[string]interface{}{"result": result, "data": data, "ts": time.Now().UnixMilli()})
+		if err != nil {
+			return err
+		}
+		payload, err = json.Marshal(map[string]interface{}{"device_id": deviceID, "values": base64.StdEncoding.EncodeToString(ack)})
+		if err != nil {
+			return err
+		}
+		topic = fmt.Sprintf("plugin/%s/devices/command/response/%s", p.Config.ServiceIdentifier, messageID)
+	}
 	if err := p.sdkClient.MQTT().Publish(topic, 1, string(payload)); err != nil {
 		return fmt.Errorf("发布指令响应失败: %w", err)
 	}
@@ -385,6 +405,9 @@ func (p *PlatformClient) SetControlProcessor(processor ControlProcessorInterface
 }
 
 func (p *PlatformClient) startCommandSubscription() error {
+	if p.Config.Managed {
+		return nil
+	} // Started after both processors are ready.
 	commandTopic := fmt.Sprintf("plugin/%s/devices/command/+/+", p.Config.ServiceIdentifier)
 	p.logger.Infof("subscribing command topic: %s", commandTopic)
 
@@ -405,6 +428,14 @@ func (p *PlatformClient) handleCommandMessage(topic string, payload []byte) {
 
 	deviceID := parts[4]
 	messageID := parts[5]
+	if p.Config.Managed {
+		device, err := p.GetDevice(parts[4])
+		if err != nil {
+			p.logger.Warn("managed command target unavailable")
+			return
+		}
+		deviceID = device.ID
+	}
 
 	var message CommandMessage
 	if err := json.Unmarshal(payload, &message); err != nil {
@@ -433,6 +464,10 @@ func (p *PlatformClient) GetControlProcessor() ControlProcessorInterface {
 }
 
 func (p *PlatformClient) startControlSubscription() error {
+	if p.Config.Managed {
+		p.startManagedSubscriptions()
+		return nil
+	}
 	controlTopic := fmt.Sprintf("plugin/%s/devices/telemetry/control/+", p.Config.ServiceIdentifier)
 	p.logger.Infof("subscribing control topic: %s", controlTopic)
 
