@@ -4,6 +4,16 @@
 
 HTTP access plugin for ThingsPanel. Devices report telemetry through HTTP; ThingsPanel sends commands or control messages through MQTT; the plugin supports both direct HTTP downlink and device long polling.
 
+## Managed installation (1.2.0)
+
+The signed managed release is available in the [installer release](https://github.com/ThingsPanel/thingspanel-installer/releases/tag/plugin-http-v1.2.0). The managed image uses `Dockerfile.managed` and a non-root, read-only runtime. Install it through the platform's trusted plugin catalog; a bare `docker run` is not a complete managed installation.
+
+Create a thing model, create an HTTP device template referring to that model, then create a device from the template. Give each device its own `accessToken`. The device sends its `device_number` and token to port 19090; it never receives the plugin's platform identity or MQTT service credentials. Managed mode requires a device token and disables dynamic registration.
+
+The installer provides `P_PLATFORM_MANAGED=true`, a generation-bound `P_PLATFORM_API_TOKEN`, and the plugin's own MQTT credentials. Platform queries always recheck identity and device scope; only the number-to-ID resolution is reused. MQTT subscriptions are limited to authorized device numbers and refreshed after reconnect. Command ACKs use the platform's canonical response envelope. Callback port 19091 stays internal; expose only the device uplink/poll/ack routes through the reviewed ingress.
+
+The previous host-process deployment workflow is manual only, so a source push cannot restart the retired server process. The public one-line installer's default catalog is maintained separately; this release does not silently replace it.
+
 ## Ports
 
 | Config | Default | Purpose |
