@@ -34,6 +34,13 @@ jobs:
           actual=$(git rev-parse HEAD)
           echo "Building source commit $actual"
           if [ -n "$EXPECTED_SOURCE" ]; then test "$actual" = "$EXPECTED_SOURCE"; fi
+          echo "BUILD_SOURCE_SHA=$actual" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.9'
+      - name: Verify HTTP command lifecycle
+        run: go test ./internal/downlink ./internal/protocol ./internal/platform -count=1
       
       # 获取版本号
       - name: 获取版本号
@@ -65,6 +72,7 @@ jobs:
       
       # 构建并推送到 DockerHub 和 GitHub
       - name: 构建并推送到 GitHub/DockerHub
+        id: image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -73,7 +81,35 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          labels: |
+            org.opencontainers.image.revision=${{ env.BUILD_SOURCE_SHA }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             thingspanel/thingspanel-adapter-http:${{ env.VERSION }}
             ghcr.io/${{ env.OWNER_LC }}/thingspanel-adapter-http:${{ env.VERSION }}
             registry.cn-hangzhou.aliyuncs.com/thingspanel/thingspanel-adapter-http:${{ env.VERSION }}
+
+      - name: Record candidate provenance
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import os, json, hashlib
+          from pathlib import Path
+          manifest = {
+            "source_repository": os.environ["GITHUB_REPOSITORY"],
+            "source_sha": os.environ["BUILD_SOURCE_SHA"],
+            "workflow_sha": os.environ["GITHUB_SHA"],
+            "workflow_run": os.environ["GITHUB_RUN_ID"],
+            "image_digest": os.environ["IMAGE_DIGEST"],
+            "tag": os.environ["VERSION"],
+            "dockerfile_sha256": hashlib.sha256(Path("Dockerfile.managed").read_bytes()).hexdigest(),
+            "tests": "go test ./internal/downlink ./internal/protocol ./internal/platform -count=1",
+            "deployment_performed": False
+          }
+          Path("http-candidate-provenance.json").write_text(json.dumps(manifest, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: http-candidate-provenance
+          path: http-candidate-provenance.json
