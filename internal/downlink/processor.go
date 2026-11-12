@@ -3,6 +3,7 @@ package downlink
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,18 @@ type Processor struct {
 	queues     map[string][]QueuedMessage
 	inflight   map[string]QueuedMessage
 	notify     map[string]chan struct{}
+	acks       map[string]*ackAttempt
+}
+
+const completedACKRetention = 5 * time.Minute
+const maxACKRecords = 1024
+
+type ackAttempt struct {
+	fingerprint [32]byte
+	done        chan struct{}
+	sending     bool
+	err         error
+	retainUntil time.Time
 }
 
 type Config struct {
@@ -56,6 +69,7 @@ type QueuedMessage struct {
 	Params       interface{} `json:"params,omitempty"`
 	Values       interface{} `json:"values,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
+	ExpiresAt    int64       `json:"expires_at,omitempty"`
 }
 
 func NewProcessor(platform PlatformClient, logger *logrus.Logger) *Processor {
@@ -68,10 +82,14 @@ func NewProcessor(platform PlatformClient, logger *logrus.Logger) *Processor {
 		queues:   make(map[string][]QueuedMessage),
 		inflight: make(map[string]QueuedMessage),
 		notify:   make(map[string]chan struct{}),
+		acks:     make(map[string]*ackAttempt),
 	}
 }
 
 func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.CommandMessage) error {
+	if message.ExpiresAt <= time.Now().UnixMilli() {
+		return fmt.Errorf("command deadline missing or expired")
+	}
 	device, err := p.platform.GetDeviceByID(deviceID)
 	if err != nil {
 		return fmt.Errorf("query device failed: device_id=%s: %w", deviceID, err)
@@ -85,6 +103,7 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 		Method:       message.Method,
 		Params:       message.Params,
 		CreatedAt:    time.Now(),
+		ExpiresAt:    message.ExpiresAt,
 	}
 
 	if directHost(device) == "" {
@@ -99,13 +118,22 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 		"tp_device_number": device.DeviceNumber,
 		"method":           message.Method,
 		"params":           message.Params,
+		"expires_at":       message.ExpiresAt,
 	}
 
-	respBody, err := p.post(device, cfg.CommandURL, cfg, body)
+	ctx, cancel := context.WithDeadline(context.Background(), time.UnixMilli(message.ExpiresAt))
+	defer cancel()
+	respBody, err := p.post(ctx, device, cfg.CommandURL, cfg, body)
 	if err != nil {
+		if queueItem.expired(time.Now()) {
+			return fmt.Errorf("command expired during direct delivery")
+		}
 		p.logger.WithError(err).Warnf("HTTP direct command failed, queued for long polling: device_id=%s, device_number=%s", deviceID, device.DeviceNumber)
 		p.enqueue(queueItem)
 		return nil
+	}
+	if queueItem.expired(time.Now()) {
+		return fmt.Errorf("command expired before direct response")
 	}
 
 	var deviceResp struct {
@@ -131,7 +159,10 @@ func (p *Processor) ProcessCommand(deviceID, messageID string, message platform.
 		return nil
 	}
 
-	if err := p.platform.PublishCommandResponse(deviceID, messageID, deviceResp.OK, deviceResp.Data); err != nil {
+	p.mu.Lock()
+	p.inflight[inflightKey(device.DeviceNumber, messageID)] = queueItem
+	p.mu.Unlock()
+	if err := p.AckCommand(device.DeviceNumber, messageID, deviceResp.OK, deviceResp.Data); err != nil {
 		p.logger.WithError(err).Error("publish command response failed")
 	}
 	return nil
@@ -162,7 +193,7 @@ func (p *Processor) ProcessControl(deviceNumber string, controlData map[string]i
 		"values":           controlData,
 	}
 
-	if _, err := p.post(device, cfg.ControlURL, cfg, body); err != nil {
+	if _, err := p.post(context.Background(), device, cfg.ControlURL, cfg, body); err != nil {
 		p.logger.WithError(err).Warnf("HTTP direct control failed, queued for long polling: device_number=%s", deviceNumber)
 		p.enqueue(queueItem)
 		return nil
@@ -181,6 +212,7 @@ func (p *Processor) Poll(ctx context.Context, deviceNumber string, timeout time.
 
 	for {
 		p.mu.Lock()
+		p.pruneExpiredLocked(time.Now())
 		if len(p.queues[deviceNumber]) > 0 {
 			items := p.queues[deviceNumber]
 			delete(p.queues, deviceNumber)
@@ -207,26 +239,84 @@ func (p *Processor) Poll(ctx context.Context, deviceNumber string, timeout time.
 
 func (p *Processor) AckCommand(deviceNumber, messageID string, ok bool, data interface{}) error {
 	key := inflightKey(deviceNumber, messageID)
+	encoded, err := json.Marshal(struct {
+		OK   bool        `json:"ok"`
+		Data interface{} `json:"data"`
+	}{ok, data})
+	if err != nil {
+		return fmt.Errorf("invalid acknowledgement: %w", err)
+	}
+	fingerprint := sha256.Sum256(encoded)
 
 	p.mu.Lock()
-	item, exists := p.inflight[key]
-	if exists {
-		delete(p.inflight, key)
+	p.pruneExpiredLocked(time.Now())
+	if previous := p.acks[key]; previous != nil {
+		if previous.fingerprint != fingerprint {
+			p.mu.Unlock()
+			return fmt.Errorf("conflicting acknowledgement")
+		}
+		if previous.sending {
+			p.mu.Unlock()
+			<-previous.done
+			return previous.err // Same attempt outcome; no automatic publish retry.
+		}
+		if previous.err == nil {
+			p.mu.Unlock()
+			return nil
+		}
+		// Only a later explicit request retries a failed send, with identical
+		// content and while the original command is still live.
 	}
+	item, exists := p.inflight[key]
+	if !exists || item.expired(time.Now()) {
+		p.mu.Unlock()
+		return fmt.Errorf("ack command absent or expired")
+	}
+	if p.acks[key] == nil && !p.reserveACKSlotLocked() {
+		p.mu.Unlock()
+		return fmt.Errorf("acknowledgement capacity reached; retry later")
+	}
+	attempt := &ackAttempt{fingerprint: fingerprint, done: make(chan struct{}), sending: true, retainUntil: time.UnixMilli(item.ExpiresAt)}
+	p.acks[key] = attempt
 	p.mu.Unlock()
 
-	if !exists {
-		device, err := p.platform.GetDevice(deviceNumber)
-		if err != nil {
-			return fmt.Errorf("ack command not found and device lookup failed: device_number=%s, message_id=%s: %w", deviceNumber, messageID, err)
-		}
-		item = QueuedMessage{DeviceID: device.ID, DeviceNumber: deviceNumber, MessageID: messageID}
+	err = p.platform.PublishCommandResponse(item.DeviceID, messageID, ok, data)
+	p.mu.Lock()
+	attempt.err = err
+	attempt.sending = false
+	if err == nil {
+		delete(p.inflight, key)
+		attempt.retainUntil = time.Now().Add(completedACKRetention)
 	}
-
-	return p.platform.PublishCommandResponse(item.DeviceID, messageID, ok, data)
+	close(attempt.done)
+	p.mu.Unlock()
+	return err
 }
 
-func (p *Processor) post(device *types.Device, path string, cfg Config, body map[string]interface{}) ([]byte, error) {
+// Completion deduplication lasts at most five minutes. At capacity evict the
+// oldest successful completion, never an active send or retryable failure.
+func (p *Processor) reserveACKSlotLocked() bool {
+	if len(p.acks) < maxACKRecords {
+		return true
+	}
+	oldestKey := ""
+	var oldest time.Time
+	for key, attempt := range p.acks {
+		if attempt.sending || attempt.err != nil {
+			continue
+		}
+		if oldestKey == "" || attempt.retainUntil.Before(oldest) {
+			oldestKey, oldest = key, attempt.retainUntil
+		}
+	}
+	if oldestKey == "" {
+		return false
+	}
+	delete(p.acks, oldestKey)
+	return true
+}
+
+func (p *Processor) post(ctx context.Context, device *types.Device, path string, cfg Config, body map[string]interface{}) ([]byte, error) {
 	host := directHost(device)
 	if host == "" {
 		return nil, fmt.Errorf("device direct downlink host is empty")
@@ -242,7 +332,7 @@ func (p *Processor) post(device *types.Device, path string, cfg Config, body map
 		return nil, fmt.Errorf("marshal downlink request failed: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create downlink request failed: %w", err)
 	}
@@ -273,6 +363,11 @@ func (p *Processor) post(device *types.Device, path string, cfg Config, body map
 
 func (p *Processor) enqueue(item QueuedMessage) {
 	p.mu.Lock()
+	p.pruneExpiredLocked(time.Now())
+	if item.expired(time.Now()) {
+		p.mu.Unlock()
+		return
+	}
 	p.queues[item.DeviceNumber] = append(p.queues[item.DeviceNumber], item)
 	ch := p.notifyChanLocked(item.DeviceNumber)
 	delete(p.notify, item.DeviceNumber)
@@ -284,6 +379,41 @@ func (p *Processor) enqueue(item QueuedMessage) {
 		"type":          item.Type,
 		"message_id":    item.MessageID,
 	}).Info("downlink message queued for long polling")
+}
+
+func (m QueuedMessage) expired(now time.Time) bool {
+	return m.Type == "command" && m.ExpiresAt <= now.UnixMilli()
+}
+
+// Expiry owns no execution receipt. The durable platform dispatcher remains
+// responsible for terminal timeout; never fabricate a successful device ACK.
+// Prune all queues and inflight records on each queue operation, including
+// stale devices that stopped polling.
+func (p *Processor) pruneExpiredLocked(now time.Time) {
+	for key, ack := range p.acks {
+		if !ack.sending && !now.Before(ack.retainUntil) {
+			delete(p.acks, key)
+		}
+	}
+	for device, items := range p.queues {
+		kept := items[:0]
+		for _, item := range items {
+			if !item.expired(now) {
+				kept = append(kept, item)
+			}
+		}
+		clear(items[len(kept):])
+		if len(kept) == 0 {
+			delete(p.queues, device)
+		} else {
+			p.queues[device] = kept
+		}
+	}
+	for key, item := range p.inflight {
+		if item.expired(now) {
+			delete(p.inflight, key)
+		}
+	}
 }
 
 func (p *Processor) notifyChanLocked(deviceNumber string) chan struct{} {

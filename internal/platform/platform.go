@@ -30,8 +30,9 @@ type ControlProcessorInterface interface {
 }
 
 type CommandMessage struct {
-	Method string      `json:"method"`
-	Params interface{} `json:"params"`
+	Method    string      `json:"method"`
+	Params    interface{} `json:"params"`
+	ExpiresAt int64       `json:"expires_at"` // accepted platform deadline, Unix milliseconds
 }
 
 type PlatformClient struct {
